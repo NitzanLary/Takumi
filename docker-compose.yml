@@ -1,0 +1,9 @@
+services:
+  ibi-sync:
+    build: ./services/ibi-sync
+    ports:
+      - "8100:8100"
+    env_file: .env
+    volumes:
+      - ./services/ibi-sync/src:/app/src
+    restart: unless-stopped

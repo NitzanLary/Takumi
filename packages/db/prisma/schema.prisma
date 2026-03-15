@@ -1,0 +1,140 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Trade Records ───────────────────────────────────────────────
+
+model Trade {
+  id            String   @id @default(cuid())
+  tradeId       String   @map("trade_id")
+  ticker        String
+  securityName  String   @map("security_name")
+  market        String   // TASE | NYSE | NASDAQ
+  direction     String   // BUY | SELL
+  quantity      Decimal
+  price         Decimal
+  currency      String   // ILS | USD
+  commission    Decimal  @default(0)
+  tradeDate     DateTime @map("trade_date")
+  source        String   // ibi_api | csv_import
+  rawPayload    String?  @map("raw_payload") // JSON string
+  notes         String?
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@unique([tradeId, source])
+  @@index([ticker])
+  @@index([tradeDate])
+  @@index([market])
+  @@map("trades")
+}
+
+// ─── Securities Reference Data ───────────────────────────────────
+
+model Security {
+  id       String  @id @default(cuid())
+  ticker   String  @unique
+  name     String
+  market   String  // TASE | NYSE | NASDAQ
+  sector   String?
+  currency String  // ILS | USD
+
+  @@map("securities")
+}
+
+// ─── Sync Log ────────────────────────────────────────────────────
+
+model SyncLog {
+  id           Int      @id @default(autoincrement())
+  syncedAt     DateTime @default(now()) @map("synced_at")
+  status       String   // success | partial | failed
+  recordsAdded Int      @default(0) @map("records_added")
+  dateFrom     DateTime @map("date_from")
+  dateTo       DateTime @map("date_to")
+  errorMessage String?  @map("error_message")
+
+  @@index([syncedAt(sort: Desc)])
+  @@map("sync_log")
+}
+
+// ─── Alerts ──────────────────────────────────────────────────────
+
+model Alert {
+  id          String    @id @default(cuid())
+  ticker      String?
+  type        String    // price_drop | price_target | holding_duration | portfolio_pnl | sync_failure | inactivity
+  threshold   Decimal
+  status      String    @default("active") // active | triggered | dismissed
+  triggeredAt DateTime? @map("triggered_at")
+  message     String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+  updatedAt   DateTime  @updatedAt @map("updated_at")
+
+  @@index([status])
+  @@map("alerts")
+}
+
+// ─── Market Prices ───────────────────────────────────────────────
+
+model MarketPrice {
+  id        String   @id @default(cuid())
+  ticker    String
+  price     Decimal
+  currency  String
+  fetchedAt DateTime @default(now()) @map("fetched_at")
+
+  @@index([ticker, fetchedAt(sort: Desc)])
+  @@map("market_prices")
+}
+
+// ─── Exchange Rates ──────────────────────────────────────────────
+
+model ExchangeRate {
+  id   String   @id @default(cuid())
+  date DateTime @unique
+  rate Decimal  // ILS per 1 USD
+
+  @@map("exchange_rates")
+}
+
+// ─── AI Conversations ────────────────────────────────────────────
+
+model AiConversation {
+  id        String      @id @default(cuid())
+  title     String?
+  createdAt DateTime    @default(now()) @map("created_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+  messages  AiMessage[]
+
+  @@map("ai_conversations")
+}
+
+model AiMessage {
+  id             String         @id @default(cuid())
+  conversationId String         @map("conversation_id")
+  role           String         // user | assistant | tool
+  content        String         // text content or JSON for tool results
+  toolCalls      String?        @map("tool_calls") // JSON array of tool calls
+  createdAt      DateTime       @default(now()) @map("created_at")
+  conversation   AiConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@map("ai_messages")
+}
+
+// ─── User Preferences (single-row) ──────────────────────────────
+
+model UserPreferences {
+  id              String @id @default("default")
+  currency        String @default("ILS") // ILS | USD
+  costBasisMethod String @default("FIFO") @map("cost_basis_method") // FIFO | LIFO | AVG
+  syncIntervalMin Int    @default(15) @map("sync_interval_min") // minutes during market hours
+  syncIntervalOff Int    @default(120) @map("sync_interval_off") // minutes outside market hours
+
+  @@map("user_preferences")
+}

@@ -1,0 +1,16 @@
+{
+  "name": "takumi",
+  "private": true,
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "test": "turbo test",
+    "lint": "turbo lint",
+    "db:generate": "turbo db:generate",
+    "db:migrate": "pnpm --filter @takumi/db db:migrate"
+  },
+  "devDependencies": {
+    "turbo": "^2"
+  },
+  "packageManager": "pnpm@10.32.1"
+}

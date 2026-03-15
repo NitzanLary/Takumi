@@ -1,0 +1,35 @@
+{
+  "name": "@takumi/api",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52",
+    "@takumi/db": "workspace:*",
+    "@takumi/types": "workspace:*",
+    "cors": "^2",
+    "dotenv": "^16",
+    "express": "^5",
+    "helmet": "^8",
+    "multer": "^1",
+    "node-cron": "^3",
+    "xlsx": "^0.18",
+    "zod": "^3"
+  },
+  "devDependencies": {
+    "@types/cors": "^2",
+    "@types/express": "^5",
+    "@types/multer": "^1",
+    "@types/node": "^22",
+    "@types/node-cron": "^3",
+    "tsx": "^4",
+    "typescript": "^5",
+    "vitest": "^3"
+  }
+}

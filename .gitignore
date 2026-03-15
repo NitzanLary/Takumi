@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+.next/
+out/
+build/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Prisma
+packages/db/prisma/*.db
+packages/db/prisma/*.db-journal
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Logs
+*.log
+logs/
+
+# Turbo
+.turbo/
+
+# Test coverage
+coverage/
+.nyc_output/

@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --sidebar-width: 240px;
+  --chat-drawer-width: 400px;
+}
+
+body {
+  @apply bg-gray-50 text-gray-900 antialiased;
+}
