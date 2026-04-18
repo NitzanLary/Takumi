@@ -203,12 +203,20 @@ export async function getLatestPrices(
   // Stooq fallback for US tickers when Yahoo is unreachable (Railway egress
   // occasionally gets blocked by Yahoo's anti-bot protections).
   if (toFetchStooq.length > 0) {
-    const settled = await Promise.all(
-      toFetchStooq.map(async ({ ticker, stooqSymbol, currency }) => {
-        const quote = await fetchStooqQuote(ticker, stooqSymbol, currency);
-        return { ticker, currency, quote };
-      })
-    );
+    // Stooq drops connections when hit with too many concurrent requests from
+    // one IP — bound concurrency to 5 and process in chunks.
+    const STOOQ_CONCURRENCY = 5;
+    const settled: Array<{ ticker: string; currency: Currency; quote: MarketQuote | null }> = [];
+    for (let i = 0; i < toFetchStooq.length; i += STOOQ_CONCURRENCY) {
+      const chunk = toFetchStooq.slice(i, i + STOOQ_CONCURRENCY);
+      const chunkResults = await Promise.all(
+        chunk.map(async ({ ticker, stooqSymbol, currency }) => {
+          const quote = await fetchStooqQuote(ticker, stooqSymbol, currency);
+          return { ticker, currency, quote };
+        })
+      );
+      settled.push(...chunkResults);
+    }
 
     for (const { ticker, currency, quote } of settled) {
       if (quote) {
