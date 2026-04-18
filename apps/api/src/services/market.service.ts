@@ -13,6 +13,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import type { MarketQuote, Currency } from '@takumi/types';
 import { fetchTheMarkerQuote } from './themarker.service.js';
+import { fetchStooqQuote, resolveStooqSymbol } from './stooq.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -56,6 +57,19 @@ export async function getLatestPrices(
   const result = new Map<string, MarketQuote>();
   const toFetchYahoo: Array<{ ticker: string; yahooSymbol: string; currency: Currency }> = [];
   const toFetchTheMarker: Array<{ ticker: string; currency: Currency }> = [];
+  const toFetchStooq: Array<{ ticker: string; stooqSymbol: string; currency: Currency }> = [];
+
+  // Collect the original inputs so fallback paths can look up market/currency.
+  const inputByTicker = new Map(tickers.map((t) => [t.ticker, t]));
+  const queueStooqFallback = (ticker: string, currency: Currency) => {
+    const input = inputByTicker.get(ticker);
+    if (!input) return false;
+    const stooqSymbol = resolveStooqSymbol(ticker, input.market);
+    if (!stooqSymbol) return false;
+    if (toFetchStooq.some((s) => s.ticker === ticker)) return true;
+    toFetchStooq.push({ ticker, stooqSymbol, currency });
+    return true;
+  };
 
   const now = new Date();
 
@@ -123,6 +137,8 @@ export async function getLatestPrices(
           // Mapped-but-unavailable TASE tickers still deserve a TheMarker fallback.
           if (isTaseTicker(ticker, tickers)) {
             toFetchTheMarker.push({ ticker, currency });
+          } else {
+            queueStooqFallback(ticker, currency);
           }
           continue;
         }
@@ -162,6 +178,7 @@ export async function getLatestPrices(
           toFetchTheMarker.push({ ticker, currency });
           continue;
         }
+        if (queueStooqFallback(ticker, currency)) continue;
         const stale = await prisma.marketPrice.findFirst({
           where: { ticker },
           orderBy: { fetchedAt: 'desc' },
@@ -179,6 +196,55 @@ export async function getLatestPrices(
             fetchedAt: stale.fetchedAt.toISOString(),
           });
         }
+      }
+    }
+  }
+
+  // Stooq fallback for US tickers when Yahoo is unreachable (Railway egress
+  // occasionally gets blocked by Yahoo's anti-bot protections).
+  if (toFetchStooq.length > 0) {
+    const settled = await Promise.all(
+      toFetchStooq.map(async ({ ticker, stooqSymbol, currency }) => {
+        const quote = await fetchStooqQuote(ticker, stooqSymbol, currency);
+        return { ticker, currency, quote };
+      })
+    );
+
+    for (const { ticker, currency, quote } of settled) {
+      if (quote) {
+        result.set(ticker, quote);
+        await prisma.marketPrice.create({
+          data: {
+            ticker,
+            price: quote.price,
+            currency,
+            dayChange: quote.dayChange,
+            dayChangePct: quote.dayChangePct,
+            high52w: null,
+            low52w: null,
+            volume: quote.volume,
+          },
+        });
+        continue;
+      }
+      // Stooq also failed — try stale cache
+      if (result.has(ticker)) continue;
+      const stale = await prisma.marketPrice.findFirst({
+        where: { ticker },
+        orderBy: { fetchedAt: 'desc' },
+      });
+      if (stale) {
+        result.set(ticker, {
+          ticker,
+          price: Number(stale.price),
+          dayChange: stale.dayChange ? Number(stale.dayChange) : null,
+          dayChangePct: stale.dayChangePct ? Number(stale.dayChangePct) : null,
+          high52w: stale.high52w ? Number(stale.high52w) : null,
+          low52w: stale.low52w ? Number(stale.low52w) : null,
+          volume: stale.volume,
+          currency,
+          fetchedAt: stale.fetchedAt.toISOString(),
+        });
       }
     }
   }
