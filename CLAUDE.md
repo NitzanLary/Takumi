@@ -134,10 +134,10 @@ All monetary fields use `Decimal` (not Float).
 
 | Route | Status | Description |
 |---|---|---|
-| `/dashboard` | **Functional** | 4 KPI cards (P&L, win rate, trades, avg return) + summary row + equity curve chart (Recharts, from portfolio snapshots) |
+| `/dashboard` | **Functional** | Unrealized-focused: 4 KPI cards (unrealized P&L / market value / cost basis per currency + open position count), per-market unrealized P&L cards (TASE in ILS with USD conversion, US in USD with ILS conversion, via `/api/exchange-rates`), equity curve chart (Recharts, from portfolio snapshots). Realized P&L summary lives on the analytics page. |
 | `/positions` | **Functional** | Open positions table with live market prices (Yahoo Finance), day change %, unrealized P&L, weight %. Refresh Prices button. Auto-refetch every 60s. Shows placeholder warning for unmapped TASE tickers. |
 | `/history` | **Functional** | Full trade table with filters (ticker/market/direction), pagination, "Show all transactions" toggle for non-trade types |
-| `/analytics` | **Functional** | Behavioral stats (8 cards), TASE vs US comparison, per-ticker P&L breakdown table, monthly P&L heatmap (color-coded grid), risk metrics cards (HHI, drawdown, Sharpe, Sortino) |
+| `/analytics` | **Functional** | Realized P&L summary (per-currency P&L, total/closed trade counts, avg return, avg holding period), behavioral stats (8 cards), TASE vs US comparison, per-ticker P&L breakdown table, monthly P&L heatmap (color-coded grid), risk metrics cards (HHI, drawdown, Sharpe, Sortino) |
 | `/import` | **Functional** | XLSX drag-and-drop import with file tracking, import status, import history table |
 | `/alerts` | Stub | Empty page |
 | `/settings` | Stub | Empty page |

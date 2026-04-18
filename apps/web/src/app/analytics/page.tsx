@@ -2,10 +2,17 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
-import { formatCurrency, formatPercent, isHebrew } from "@/lib/formatters";
+import { formatCurrency, formatNumber, formatPercent, isHebrew } from "@/lib/formatters";
+
+interface CurrencyPnl {
+  currency: string;
+  realizedPnl: number;
+  tradeCount: number;
+}
 
 interface AnalyticsSummary {
   totalRealizedPnl: number;
+  pnlByCurrency?: CurrencyPnl[];
   totalTrades: number;
   totalTradeCount: number;
   winRate: number;
@@ -90,6 +97,56 @@ export default function AnalyticsPage() {
   return (
     <div className="space-y-6">
       <h2 className="text-2xl font-bold text-gray-900">Analytics</h2>
+
+      {/* Realized P&L summary */}
+      {summary && (
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <div className="rounded-xl border border-gray-200 bg-white p-5">
+            <p className="text-sm text-gray-500">Total Realized P&L</p>
+            {summary.pnlByCurrency && summary.pnlByCurrency.length > 0 ? (
+              <div className="mt-1 space-y-0.5">
+                {summary.pnlByCurrency.map((p) => (
+                  <p
+                    key={p.currency}
+                    className={`text-xl font-semibold ${
+                      p.realizedPnl >= 0 ? "text-green-600" : "text-red-600"
+                    }`}
+                  >
+                    {formatCurrency(p.realizedPnl, p.currency as "ILS" | "USD")}
+                  </p>
+                ))}
+              </div>
+            ) : (
+              <p
+                className={`mt-1 text-2xl font-semibold ${
+                  summary.totalRealizedPnl >= 0
+                    ? "text-green-600"
+                    : "text-red-600"
+                }`}
+              >
+                {formatCurrency(summary.totalRealizedPnl, "USD")}
+              </p>
+            )}
+          </div>
+          <StatCard
+            label="Total Trades"
+            value={formatNumber(summary.totalTradeCount)}
+          />
+          <StatCard
+            label="Closed Trades (FIFO)"
+            value={formatNumber(summary.totalTrades)}
+          />
+          <StatCard
+            label="Avg Return"
+            value={formatPercent(summary.avgReturn)}
+            color={summary.avgReturn >= 0 ? "text-green-600" : "text-red-600"}
+          />
+          <StatCard
+            label="Avg Holding Period"
+            value={`${Math.round(summary.avgHoldingDays)} days`}
+          />
+        </div>
+      )}
 
       {/* Behavioral stats */}
       {summary && (
