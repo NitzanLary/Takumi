@@ -6,8 +6,6 @@ import { apiFetch } from "@/lib/api-client";
 import { formatDate } from "@/lib/formatters";
 import type { SyncState, SyncLogEntry } from "@takumi/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
-
 interface ImportResult {
   status: string;
   totalRows: number;
@@ -26,7 +24,7 @@ export default function ImportPage() {
     mutationFn: async (file: File) => {
       const form = new FormData();
       form.append("file", file);
-      const res = await fetch(`${API_BASE}/api/sync/import`, {
+      const res = await fetch(`/api/sync/import`, {
         method: "POST",
         body: form,
       });
@@ -146,7 +144,7 @@ export default function ImportPage() {
 
         {/* Selected file + import button */}
         {fileName && (
-          <div className="mt-4 flex items-center justify-between rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
             <div className="flex items-center gap-2">
               <svg className="h-5 w-5 text-green-600" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m2.25 0H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />
@@ -192,7 +190,7 @@ export default function ImportPage() {
       {/* Last import status */}
       {syncStatus?.lastSyncAt && (
         <div className="rounded-xl border border-gray-200 bg-white px-6 py-4">
-          <div className="flex items-center gap-6 text-sm">
+          <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
             <div className="flex items-center gap-2">
               <span className="text-gray-500">Last import:</span>
               <span
@@ -227,7 +225,7 @@ export default function ImportPage() {
         {!syncLog?.length ? (
           <p className="text-gray-400">No imports yet.</p>
         ) : (
-          <div className="overflow-hidden rounded-lg border border-gray-100">
+          <div className="overflow-x-auto rounded-lg border border-gray-100">
             <table className="min-w-full divide-y divide-gray-200">
               <thead className="bg-gray-50">
                 <tr>

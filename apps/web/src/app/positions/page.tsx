@@ -42,7 +42,7 @@ export default function PositionsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Open Positions</h2>
           <p className="text-sm text-gray-500">
@@ -66,7 +66,7 @@ export default function PositionsPage() {
 
       {/* Summary strip */}
       {positions && positions.length > 0 && (
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
           <div className="rounded-xl border border-gray-200 bg-white p-4">
             <p className="text-sm text-gray-500">Positions</p>
             <p className="mt-1 text-xl font-semibold text-gray-900">
@@ -95,7 +95,7 @@ export default function PositionsPage() {
       )}
 
       {/* Positions table */}
-      <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+      <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>

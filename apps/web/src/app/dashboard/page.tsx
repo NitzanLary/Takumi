@@ -113,7 +113,7 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Dashboard</h2>
           {syncStatus?.lastSyncAt && (
@@ -134,7 +134,7 @@ export default function DashboardPage() {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
         {kpis.map((kpi) => (
           <div
             key={kpi.label}
@@ -167,7 +167,7 @@ export default function DashboardPage() {
 
       {/* Summary cards */}
       {analytics && (
-        <div className="grid grid-cols-3 gap-4">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
           <div className="rounded-xl border border-gray-200 bg-white p-5">
             <p className="text-sm text-gray-500">Open Positions</p>
             <p className="mt-1 text-xl font-semibold text-gray-900">

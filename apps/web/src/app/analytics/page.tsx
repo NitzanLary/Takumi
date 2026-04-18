@@ -141,7 +141,7 @@ export default function AnalyticsPage() {
       {marketPnl && marketPnl.length > 0 && (
         <div className="rounded-xl border border-gray-200 bg-white p-6">
           <h3 className="mb-4 text-lg font-semibold">TASE vs US Performance</h3>
-          <div className="grid grid-cols-2 gap-6">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:gap-6">
             {marketPnl.map((m) => (
               <div
                 key={m.market}
@@ -173,7 +173,7 @@ export default function AnalyticsPage() {
           <h3 className="text-lg font-semibold">P&L Breakdown by Ticker</h3>
         </div>
 
-        <div className="overflow-hidden rounded-lg border border-gray-100">
+        <div className="overflow-x-auto rounded-lg border border-gray-100">
           <table className="min-w-full divide-y divide-gray-200">
             <thead className="bg-gray-50">
               <tr>

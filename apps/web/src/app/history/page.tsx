@@ -32,7 +32,7 @@ export default function HistoryPage() {
       <h2 className="text-2xl font-bold text-gray-900">Trade History</h2>
 
       {/* Filters */}
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-3">
         <input
           type="text"
           placeholder="Filter by ticker..."
@@ -83,7 +83,7 @@ export default function HistoryPage() {
       </div>
 
       {/* Table */}
-      <div className="overflow-hidden rounded-xl border border-gray-200 bg-white">
+      <div className="overflow-x-auto rounded-xl border border-gray-200 bg-white">
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>

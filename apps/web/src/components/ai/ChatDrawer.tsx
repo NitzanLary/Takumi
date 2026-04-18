@@ -51,7 +51,7 @@ export function ChatDrawer() {
       />
 
       {/* Drawer */}
-      <div className="fixed bottom-0 right-0 top-0 z-50 flex w-[400px] flex-col border-l border-gray-200 bg-gray-50 shadow-xl">
+      <div className="fixed bottom-0 right-0 top-0 z-50 flex w-full flex-col border-l border-gray-200 bg-gray-50 shadow-xl md:w-[400px]">
         {/* Header */}
         <div className="flex h-14 items-center justify-between border-b border-gray-200 bg-white px-4">
           <div className="flex items-center gap-2">

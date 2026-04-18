@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { Sidebar } from "@/components/layout/Sidebar";
@@ -11,6 +11,11 @@ const inter = Inter({ subsets: ["latin"] });
 export const metadata: Metadata = {
   title: "Takumi — Trading Intelligence",
   description: "Personal trading intelligence platform",
+};
+
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
 };
 
 export default function RootLayout({
@@ -26,7 +31,7 @@ export default function RootLayout({
             <Sidebar />
             <div className="flex flex-1 flex-col overflow-hidden">
               <TopBar />
-              <main className="flex-1 overflow-y-auto p-6">{children}</main>
+              <main className="flex-1 overflow-y-auto p-3 sm:p-6">{children}</main>
             </div>
             <ChatDrawer />
           </div>
