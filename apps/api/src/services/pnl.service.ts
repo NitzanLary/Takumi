@@ -86,8 +86,8 @@ export async function runFifoMatching(): Promise<{
   }
 
   const trades = await prisma.trade.findMany({
-    where: { direction: { in: ['BUY', 'SELL'] } },
-    orderBy: { tradeDate: 'asc' },
+    where: { direction: { in: ['BUY', 'SELL', 'SPLIT'] } },
+    orderBy: [{ tradeDate: 'asc' }, { createdAt: 'asc' }],
   });
 
   // Group by ticker
@@ -120,6 +120,19 @@ export async function runFifoMatching(): Promise<{
           date: trade.tradeDate,
           commissionPerShare: qty > 0 ? commission / qty : 0,
         });
+      } else if (trade.direction === 'SPLIT') {
+        // IBI records splits as "הטבה" (bonus) rows: qty = bonus shares added.
+        // Distribute bonus across the currently-open lots, preserving total
+        // cost basis: multiply remainingQty by ratio, divide price & commission/share.
+        const openQty = buyQueue.reduce((s, l) => s + l.remainingQty, 0);
+        if (openQty > 0 && qty !== 0) {
+          const ratio = (openQty + qty) / openQty;
+          for (const lot of buyQueue) {
+            lot.remainingQty *= ratio;
+            lot.price /= ratio;
+            lot.commissionPerShare /= ratio;
+          }
+        }
       } else {
         // SELL — match against oldest buy lots (FIFO)
         let remainingToSell = qty;
