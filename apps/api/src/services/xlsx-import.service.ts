@@ -291,7 +291,9 @@ export async function importXlsx(buffer: Buffer, fileName?: string): Promise<Imp
       const tradeDate = parseDate(String(row.date || ""));
       const currency = parseCurrency(String(row.currency || ""));
       const quantity = Number(row.quantity) || 0;
-      const price = Number(row.price) || 0;
+      const rawPrice = Number(row.price) || 0;
+      // TASE securities quote שער ביצוע in agorot (1/100 ILS). Convert to ILS.
+      const price = parsed.market === "TASE" ? rawPrice / 100 : rawPrice;
       const commission = Number(row.commission) || 0;
       const proceedsFx = row.proceedsFx != null ? Number(row.proceedsFx) : null;
       const proceedsIls = row.proceedsIls != null ? Number(row.proceedsIls) : null;
