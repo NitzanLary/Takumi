@@ -1,6 +1,7 @@
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
+import basicAuth from "express-basic-auth";
 import { config } from "./lib/config.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import tradesRouter from "./routes/trades.js";
@@ -20,13 +21,24 @@ const app = express();
 registerTools(allToolSchemas, executeTool);
 
 app.use(helmet());
-app.use(cors({ origin: `http://localhost:${process.env.WEB_PORT || 3000}` }));
+app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json());
 
-// Routes
+// Health check — always public (used by Railway for uptime checks)
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
+
+// Basic auth for everything else, when credentials are configured
+if (config.basicAuth.user && config.basicAuth.pass) {
+  app.use(
+    basicAuth({
+      users: { [config.basicAuth.user]: config.basicAuth.pass },
+      challenge: true,
+      realm: "Takumi",
+    })
+  );
+}
 
 app.use("/api/trades", tradesRouter);
 app.use("/api/sync", syncRouter);
@@ -40,8 +52,9 @@ app.use("/api/chat", chatRouter);
 // Error handler
 app.use(errorHandler);
 
-app.listen(config.port, () => {
-  console.log(`[takumi-api] listening on http://localhost:${config.port}`);
+// Bind to :: (all IPv6 + IPv4 via dual-stack) — required for Railway private networking
+app.listen(config.port, "::", () => {
+  console.log(`[takumi-api] listening on :${config.port}`);
 });
 
 export default app;

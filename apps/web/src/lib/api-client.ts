@@ -1,4 +1,5 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+// Same-origin — /api/* is rewritten to the API service by next.config.mjs
+const API_BASE = "";
 
 export async function apiFetch<T>(
   path: string,
