@@ -12,6 +12,7 @@ import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import path from 'path';
 import type { MarketQuote, Currency } from '@takumi/types';
+import { fetchTheMarkerQuote } from './themarker.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -53,7 +54,8 @@ export async function getLatestPrices(
   tickers: Array<{ ticker: string; market: string; currency: string }>
 ): Promise<Map<string, MarketQuote>> {
   const result = new Map<string, MarketQuote>();
-  const toFetch: Array<{ ticker: string; yahooSymbol: string; currency: Currency }> = [];
+  const toFetchYahoo: Array<{ ticker: string; yahooSymbol: string; currency: Currency }> = [];
+  const toFetchTheMarker: Array<{ ticker: string; currency: Currency }> = [];
 
   const now = new Date();
 
@@ -82,9 +84,13 @@ export async function getLatestPrices(
 
     const yahooSymbol = resolveYahooSymbol(ticker, market);
     if (yahooSymbol) {
-      toFetch.push({ ticker, yahooSymbol, currency });
+      toFetchYahoo.push({ ticker, yahooSymbol, currency });
+    } else if (market === 'TASE') {
+      // TASE securities without a Yahoo mapping (e.g., Israeli mutual funds)
+      // fall back to TheMarker Finance, which covers the full TASE paper-ID space.
+      toFetchTheMarker.push({ ticker, currency });
     } else if (cached) {
-      // Unmapped TASE ticker but has stale cache — use it
+      // Last-resort stale cache for tickers we can't resolve anywhere
       result.set(ticker, {
         ticker,
         price: Number(cached.price),
@@ -97,61 +103,113 @@ export async function getLatestPrices(
         fetchedAt: cached.fetchedAt.toISOString(),
       });
     }
-    // If no cache and no Yahoo symbol, ticker won't appear in result (placeholder)
   }
 
-  if (toFetch.length === 0) return result;
-
   // Batch fetch from Yahoo Finance
-  const yahooSymbols = toFetch.map((t) => t.yahooSymbol);
-  try {
-    const quotes = await yahooFinance.quote(yahooSymbols);
+  if (toFetchYahoo.length > 0) {
+    const yahooSymbols = toFetchYahoo.map((t) => t.yahooSymbol);
+    try {
+      const quotes = await yahooFinance.quote(yahooSymbols);
 
-    // Build a map from Yahoo symbol to quote
-    const quoteMap = new Map<string, (typeof quotes)[number]>();
-    for (const q of quotes) {
-      quoteMap.set(q.symbol, q);
-    }
-
-    for (const { ticker, yahooSymbol, currency } of toFetch) {
-      const q = quoteMap.get(yahooSymbol);
-      if (!q || q.regularMarketPrice == null) {
-        console.warn(`[market] No quote data for ${yahooSymbol} (ticker: ${ticker})`);
-        continue;
+      const quoteMap = new Map<string, (typeof quotes)[number]>();
+      for (const q of quotes) {
+        quoteMap.set(q.symbol, q);
       }
 
-      const marketQuote: MarketQuote = {
-        ticker,
-        price: q.regularMarketPrice,
-        dayChange: q.regularMarketChange ?? null,
-        dayChangePct: q.regularMarketChangePercent ?? null,
-        high52w: q.fiftyTwoWeekHigh ?? null,
-        low52w: q.fiftyTwoWeekLow ?? null,
-        volume: q.regularMarketVolume ?? null,
-        currency,
-        fetchedAt: new Date().toISOString(),
-      };
+      for (const { ticker, yahooSymbol, currency } of toFetchYahoo) {
+        const q = quoteMap.get(yahooSymbol);
+        if (!q || q.regularMarketPrice == null) {
+          console.warn(`[market] No quote data for ${yahooSymbol} (ticker: ${ticker})`);
+          // Mapped-but-unavailable TASE tickers still deserve a TheMarker fallback.
+          if (isTaseTicker(ticker, tickers)) {
+            toFetchTheMarker.push({ ticker, currency });
+          }
+          continue;
+        }
 
-      result.set(ticker, marketQuote);
-
-      // Upsert into cache
-      await prisma.marketPrice.create({
-        data: {
+        const marketQuote: MarketQuote = {
           ticker,
           price: q.regularMarketPrice,
-          currency,
           dayChange: q.regularMarketChange ?? null,
           dayChangePct: q.regularMarketChangePercent ?? null,
           high52w: q.fiftyTwoWeekHigh ?? null,
           low52w: q.fiftyTwoWeekLow ?? null,
           volume: q.regularMarketVolume ?? null,
-        },
-      });
+          currency,
+          fetchedAt: new Date().toISOString(),
+        };
+
+        result.set(ticker, marketQuote);
+
+        await prisma.marketPrice.create({
+          data: {
+            ticker,
+            price: q.regularMarketPrice,
+            currency,
+            dayChange: q.regularMarketChange ?? null,
+            dayChangePct: q.regularMarketChangePercent ?? null,
+            high52w: q.fiftyTwoWeekHigh ?? null,
+            low52w: q.fiftyTwoWeekLow ?? null,
+            volume: q.regularMarketVolume ?? null,
+          },
+        });
+      }
+    } catch (err) {
+      console.error('[market] Yahoo Finance fetch error:', err);
+      for (const { ticker, currency } of toFetchYahoo) {
+        if (result.has(ticker)) continue;
+        if (isTaseTicker(ticker, tickers)) {
+          toFetchTheMarker.push({ ticker, currency });
+          continue;
+        }
+        const stale = await prisma.marketPrice.findFirst({
+          where: { ticker },
+          orderBy: { fetchedAt: 'desc' },
+        });
+        if (stale) {
+          result.set(ticker, {
+            ticker,
+            price: Number(stale.price),
+            dayChange: stale.dayChange ? Number(stale.dayChange) : null,
+            dayChangePct: stale.dayChangePct ? Number(stale.dayChangePct) : null,
+            high52w: stale.high52w ? Number(stale.high52w) : null,
+            low52w: stale.low52w ? Number(stale.low52w) : null,
+            volume: stale.volume,
+            currency,
+            fetchedAt: stale.fetchedAt.toISOString(),
+          });
+        }
+      }
     }
-  } catch (err) {
-    console.error('[market] Yahoo Finance fetch error:', err);
-    // For any tickers that failed, try to serve stale cache
-    for (const { ticker, currency } of toFetch) {
+  }
+
+  // TheMarker fallback for unmapped or Yahoo-missing TASE tickers (fetched in parallel)
+  if (toFetchTheMarker.length > 0) {
+    const settled = await Promise.all(
+      toFetchTheMarker.map(async ({ ticker, currency }) => {
+        const quote = await fetchTheMarkerQuote(ticker, currency);
+        return { ticker, currency, quote };
+      })
+    );
+
+    for (const { ticker, currency, quote } of settled) {
+      if (quote) {
+        result.set(ticker, quote);
+        await prisma.marketPrice.create({
+          data: {
+            ticker,
+            price: quote.price,
+            currency,
+            dayChange: quote.dayChange,
+            dayChangePct: quote.dayChangePct,
+            high52w: null,
+            low52w: null,
+            volume: quote.volume,
+          },
+        });
+        continue;
+      }
+      // TheMarker failed too — try stale cache
       if (result.has(ticker)) continue;
       const stale = await prisma.marketPrice.findFirst({
         where: { ticker },
@@ -174,6 +232,13 @@ export async function getLatestPrices(
   }
 
   return result;
+}
+
+function isTaseTicker(
+  ticker: string,
+  tickers: Array<{ ticker: string; market: string; currency: string }>
+): boolean {
+  return tickers.some((t) => t.ticker === ticker && t.market === 'TASE');
 }
 
 /**

@@ -36,7 +36,7 @@ takumi/
 │       └── src/
 │           ├── index.ts      # App entry — registers routes
 │           ├── routes/       # trades.ts, sync.ts, positions.ts, analytics.ts, market.ts, exchange-rates.ts, snapshots.ts, chat.ts
-│           ├── services/     # trade.service.ts, sync.service.ts, xlsx-import.service.ts, pnl.service.ts, position.service.ts, analytics.service.ts, market.service.ts, exchange-rate.service.ts, snapshot.service.ts, risk.service.ts, whatif.service.ts
+│           ├── services/     # trade.service.ts, sync.service.ts, xlsx-import.service.ts, pnl.service.ts, position.service.ts, analytics.service.ts, market.service.ts, themarker.service.ts, exchange-rate.service.ts, snapshot.service.ts, risk.service.ts, whatif.service.ts
 │           ├── data/         # tase-ticker-map.json, sector-map.json
 │           ├── middleware/    # error-handler.ts
 │           ├── lib/          # config.ts, db.ts
@@ -163,6 +163,7 @@ All monetary fields use `Decimal` (not Float).
 - **Transaction linking** — Related transactions (e.g., dividend + tax withholding) share the same `ticker` and `tradeDate`. Query by ticker to see all related activity. No explicit `groupId` field.
 - **Market data caching** — Yahoo Finance prices are cached in `market_prices` with 15-minute staleness. The `market.service.ts` checks cache first, fetches from Yahoo only for stale/missing tickers. On failure, serves stale cache. Benchmarks (TA-125, S&P 500) are cached the same way.
 - **TASE ticker mapping** — TASE securities use IBI paper numbers as `ticker` (e.g., `1081820`), but Yahoo Finance requires trading symbols with `.TA` suffix (e.g., `LUMI.TA`). The mapping is maintained in `apps/api/src/data/tase-ticker-map.json` and synced to the `securities.yahooSymbol` column.
+- **TheMarker Finance fallback** — TASE tickers without a Yahoo mapping (notably Israeli mutual funds / קרנות נאמנות which have no `.TA` trading symbol, e.g., `1143726`, `1169408`) fall back to TheMarker Finance. `themarker.service.ts` fetches `https://finance.themarker.com/stock/{paperId}`, parses the server-rendered Apollo cache from `<script id="__NEXT_DATA__">`, and reads `ROOT_QUERY.assets({"ids":"<paperId>"}).0`. Prices are quoted in agorot and divided by 100 to normalize to ILS (same convention as IBI). No API key, no mapping — IBI paper number is the URL. Yahoo remains the primary source for mapped tickers (provides 52w high/low); TheMarker fills daily change/volume only. Also invoked if Yahoo returns no data for a mapped TASE ticker.
 - **Portfolio snapshots** — Auto-captured once per day after 15:00 UTC (~17:00 IST) on first API request. Also manually triggerable via `POST /api/snapshots/capture`. One snapshot per calendar day (upsert on date).
 - **AI chat** — Persistent right-side drawer (400px on ≥md, full-width on mobile). Uses Zustand store (`chat-store.ts`) for state, SSE streaming from `POST /api/chat`. Messages rendered with `react-markdown`. Tool calls shown as collapsible indicators.
 - **Responsive layout** — Mobile-first. Sidebar is a fixed 240px column on ≥md and collapses to an off-canvas drawer on <md (hamburger in TopBar, state in `ui-store.ts`). ChatDrawer is full-width on <md, 400px on ≥md. Tables wrap in `overflow-x-auto` containers. Grid layouts use `grid-cols-{1|2} … lg:grid-cols-4` pattern. Main padding is `p-3 sm:p-6`. Viewport meta set via `viewport` export in `apps/web/src/app/layout.tsx`.
@@ -282,6 +283,7 @@ Hosted on Railway at https://web-production-7a48c.up.railway.app — project ID 
 | Service | Purpose | Phase | Status | Notes |
 |---|---|---|---|---|
 | Yahoo Finance (`yahoo-finance2` v3) | Live prices, benchmarks (TA-125, S&P 500) | 3 | **Active** | TASE tickers resolved via `tase-ticker-map.json` → `.TA` suffix. 15-min cache staleness. |
+| TheMarker Finance (scrape) | Price fallback for unmapped TASE tickers (mutual funds) | 3 | **Active** | Scrapes `finance.themarker.com/stock/{paperId}` `__NEXT_DATA__` Apollo cache. No auth, no mapping. Agorot → ILS. No 52w high/low. |
 | Bank of Israel SDMX API | Official daily ILS/USD exchange rates | 3 | **Active** | Free, no auth. Backfills into `exchange_rates` table. Endpoint: `edge.boi.gov.il/FusionEdgeServer/sdmx/v2/data/dataflow/BOI/EXR/1.0/` |
 | Finnhub | News headlines, earnings calendar, corporate events | 5 | Planned | Free tier: 60 calls/min. Cache in `security_events` table. |
 
