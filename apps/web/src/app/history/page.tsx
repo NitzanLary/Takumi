@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
-import { formatCurrency, formatDate, formatNumber } from "@/lib/formatters";
+import { formatCurrency, formatDate, formatNumber, isHebrew } from "@/lib/formatters";
 import type { Trade, PaginatedResponse } from "@takumi/types";
 
 export default function HistoryPage() {
@@ -11,6 +11,7 @@ export default function HistoryPage() {
   const [ticker, setTicker] = useState("");
   const [market, setMarket] = useState("");
   const [direction, setDirection] = useState("");
+  const [showAll, setShowAll] = useState(false);
 
   const params = new URLSearchParams();
   params.set("page", String(page));
@@ -18,9 +19,10 @@ export default function HistoryPage() {
   if (ticker) params.set("ticker", ticker);
   if (market) params.set("market", market);
   if (direction) params.set("direction", direction);
+  if (showAll) params.set("includeNonTrades", "true");
 
   const { data, isLoading } = useQuery({
-    queryKey: ["trades", page, ticker, market, direction],
+    queryKey: ["trades", page, ticker, market, direction, showAll],
     queryFn: () =>
       apiFetch<PaginatedResponse<Trade>>(`/api/trades?${params.toString()}`),
   });
@@ -66,6 +68,18 @@ export default function HistoryPage() {
           <option value="BUY">BUY</option>
           <option value="SELL">SELL</option>
         </select>
+        <label className="flex items-center gap-1.5 text-sm text-gray-600">
+          <input
+            type="checkbox"
+            checked={showAll}
+            onChange={(e) => {
+              setShowAll(e.target.checked);
+              setPage(1);
+            }}
+            className="rounded border-gray-300"
+          />
+          Show all transactions
+        </label>
       </div>
 
       {/* Table */}
@@ -102,7 +116,7 @@ export default function HistoryPage() {
             ) : !data?.data.length ? (
               <tr>
                 <td colSpan={8} className="px-4 py-8 text-center text-gray-400">
-                  No trades found. Sync your data from IBI or import a CSV.
+                  No trades found. Import your transactions from the Import page.
                 </td>
               </tr>
             ) : (
@@ -112,14 +126,18 @@ export default function HistoryPage() {
                     {formatDate(trade.tradeDate)}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm font-medium">
-                    {trade.ticker}
+                    <span dir={isHebrew(trade.ticker) ? "rtl" : "ltr"}>
+                      {trade.ticker}
+                    </span>
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm">
                     <span
                       className={`inline-flex rounded-full px-2 py-0.5 text-xs font-medium ${
                         trade.direction === "BUY"
                           ? "bg-green-100 text-green-700"
-                          : "bg-red-100 text-red-700"
+                          : trade.direction === "SELL"
+                            ? "bg-red-100 text-red-700"
+                            : "bg-gray-100 text-gray-600"
                       }`}
                     >
                       {trade.direction}
@@ -138,7 +156,7 @@ export default function HistoryPage() {
                     {trade.market}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-400">
-                    {trade.source === "ibi_api" ? "IBI" : "CSV"}
+                    {trade.source === "xlsx_import" ? "XLSX" : trade.source}
                   </td>
                 </tr>
               ))

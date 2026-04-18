@@ -18,8 +18,8 @@
     "express": "^5",
     "helmet": "^8",
     "multer": "^1",
-    "node-cron": "^3",
     "xlsx": "^0.18",
+    "yahoo-finance2": "^3.13.2",
     "zod": "^3"
   },
   "devDependencies": {
@@ -27,7 +27,6 @@
     "@types/express": "^5",
     "@types/multer": "^1",
     "@types/node": "^22",
-    "@types/node-cron": "^3",
     "tsx": "^4",
     "typescript": "^5",
     "vitest": "^3"

@@ -20,8 +20,11 @@ model Trade {
   price         Decimal
   currency      String   // ILS | USD
   commission    Decimal  @default(0)
+  proceedsFx    Decimal? @map("proceeds_fx")       // Actual FX amount (תמורה במט"ח)
+  proceedsIls   Decimal? @map("proceeds_ils")      // Actual ILS amount (תמורה בשקלים)
+  capitalGainsTax Decimal? @map("capital_gains_tax") // Estimated capital gains tax
   tradeDate     DateTime @map("trade_date")
-  source        String   // ibi_api | csv_import
+  source        String   // xlsx_import
   rawPayload    String?  @map("raw_payload") // JSON string
   notes         String?
   createdAt     DateTime @default(now()) @map("created_at")
@@ -37,12 +40,15 @@ model Trade {
 // ─── Securities Reference Data ───────────────────────────────────
 
 model Security {
-  id       String  @id @default(cuid())
-  ticker   String  @unique
-  name     String
-  market   String  // TASE | NYSE | NASDAQ
-  sector   String?
-  currency String  // ILS | USD
+  id              String  @id @default(cuid())
+  ticker          String  @unique
+  name            String
+  market          String  // TASE | NYSE | NASDAQ
+  sector          String?
+  currency        String  // ILS | USD
+  yahooSymbol     String? @map("yahoo_symbol")
+  industry        String?
+  marketCapBucket String? @map("market_cap_bucket")
 
   @@map("securities")
 }
@@ -56,6 +62,7 @@ model SyncLog {
   recordsAdded Int      @default(0) @map("records_added")
   dateFrom     DateTime @map("date_from")
   dateTo       DateTime @map("date_to")
+  fileName     String?  @map("file_name")
   errorMessage String?  @map("error_message")
 
   @@index([syncedAt(sort: Desc)])
@@ -82,11 +89,16 @@ model Alert {
 // ─── Market Prices ───────────────────────────────────────────────
 
 model MarketPrice {
-  id        String   @id @default(cuid())
-  ticker    String
-  price     Decimal
-  currency  String
-  fetchedAt DateTime @default(now()) @map("fetched_at")
+  id           String   @id @default(cuid())
+  ticker       String
+  price        Decimal
+  currency     String
+  dayChange    Decimal? @map("day_change")
+  dayChangePct Decimal? @map("day_change_pct")
+  high52w      Decimal? @map("high_52w")
+  low52w       Decimal? @map("low_52w")
+  volume       Int?
+  fetchedAt    DateTime @default(now()) @map("fetched_at")
 
   @@index([ticker, fetchedAt(sort: Desc)])
   @@map("market_prices")
@@ -100,6 +112,22 @@ model ExchangeRate {
   rate Decimal  // ILS per 1 USD
 
   @@map("exchange_rates")
+}
+
+// ─── Portfolio Snapshots ─────────────────────────────────────────
+
+model PortfolioSnapshot {
+  id             String   @id @default(cuid())
+  date           DateTime @unique
+  totalValue     Decimal  @map("total_value")
+  totalCostBasis Decimal  @map("total_cost_basis")
+  unrealizedPnl  Decimal  @map("unrealized_pnl")
+  realizedPnl    Decimal  @map("realized_pnl")
+  positionCount  Int      @map("position_count")
+  snapshotData   String?  @map("snapshot_data") // JSON string
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@map("portfolio_snapshots")
 }
 
 // ─── AI Conversations ────────────────────────────────────────────
@@ -133,8 +161,6 @@ model UserPreferences {
   id              String @id @default("default")
   currency        String @default("ILS") // ILS | USD
   costBasisMethod String @default("FIFO") @map("cost_basis_method") // FIFO | LIFO | AVG
-  syncIntervalMin Int    @default(15) @map("sync_interval_min") // minutes during market hours
-  syncIntervalOff Int    @default(120) @map("sync_interval_off") // minutes outside market hours
 
   @@map("user_preferences")
 }

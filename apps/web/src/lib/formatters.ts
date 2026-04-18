@@ -25,3 +25,8 @@ export function formatDate(dateStr: string): string {
 export function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
 }
+
+/** Returns true if the string contains Hebrew characters. */
+export function isHebrew(text: string): boolean {
+  return /[\u0590-\u05FF]/.test(text);
+}

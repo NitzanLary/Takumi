@@ -12,11 +12,6 @@ set -a
 source "$ROOT_DIR/.env"
 set +a
 
-# Start Python IBI sync service
-echo "==> Starting IBI sync service (port 8100)..."
-(cd "$ROOT_DIR/services/ibi-sync" && .venv/bin/uvicorn src.server:app --host 0.0.0.0 --port 8100 --reload) &
-IBI_PID=$!
-
 # Start Express API
 echo "==> Starting API server (port 3001)..."
 (cd "$ROOT_DIR" && pnpm --filter @takumi/api dev) &
@@ -31,10 +26,18 @@ echo ""
 echo "==> All services running:"
 echo "    Frontend:  http://localhost:3000"
 echo "    API:       http://localhost:3001"
-echo "    IBI Sync:  http://localhost:8100"
 echo ""
 echo "Press Ctrl+C to stop all services."
 
 # Wait and cleanup
-trap "kill $IBI_PID $API_PID $WEB_PID 2>/dev/null; exit" INT TERM
+cleanup() {
+    echo ""
+    echo "==> Shutting down..."
+    kill $API_PID $WEB_PID 2>/dev/null
+    wait $API_PID 2>/dev/null
+    wait $WEB_PID 2>/dev/null
+    echo "==> All services stopped."
+    exit 0
+}
+trap cleanup INT TERM
 wait

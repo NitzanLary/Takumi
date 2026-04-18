@@ -14,6 +14,7 @@ router.get("/", async (req, res) => {
     source: req.query.source as TradeFilters["source"],
     page: req.query.page ? parseInt(req.query.page as string, 10) : 1,
     limit: req.query.limit ? parseInt(req.query.limit as string, 10) : 50,
+    includeNonTrades: req.query.includeNonTrades === "true",
   };
 
   const result = await getTrades(filters);

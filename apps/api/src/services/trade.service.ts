@@ -1,5 +1,6 @@
 import { prisma } from "../lib/db.js";
 import type { TradeFilters } from "@takumi/types";
+import { CORE_DIRECTIONS } from "@takumi/types";
 
 export async function getTrades(filters: TradeFilters) {
   const {
@@ -11,12 +12,17 @@ export async function getTrades(filters: TradeFilters) {
     source,
     page = 1,
     limit = 50,
+    includeNonTrades = false,
   } = filters;
 
   const where: Record<string, unknown> = {};
   if (ticker) where.ticker = { contains: ticker };
   if (market) where.market = market;
-  if (direction) where.direction = direction;
+  if (direction) {
+    where.direction = direction;
+  } else if (!includeNonTrades) {
+    where.direction = { in: CORE_DIRECTIONS };
+  }
   if (source) where.source = source;
   if (dateFrom || dateTo) {
     where.tradeDate = {
@@ -58,5 +64,8 @@ function serializeTrade(trade: Record<string, unknown>) {
     quantity: Number(trade.quantity),
     price: Number(trade.price),
     commission: Number(trade.commission),
+    proceedsFx: trade.proceedsFx != null ? Number(trade.proceedsFx) : null,
+    proceedsIls: trade.proceedsIls != null ? Number(trade.proceedsIls) : null,
+    capitalGainsTax: trade.capitalGainsTax != null ? Number(trade.capitalGainsTax) : null,
   };
 }

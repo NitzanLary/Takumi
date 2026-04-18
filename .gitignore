@@ -43,3 +43,7 @@ logs/
 # Test coverage
 coverage/
 .nyc_output/
+
+# Personal trading data (do not commit)
+IBI_transactions_*.xlsx
+data/

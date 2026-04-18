@@ -32,6 +32,7 @@
 5. [IBI Spark API Integration](#5-ibi-spark-api-integration)
 6. [Data Layer](#6-data-layer)
 7. [Analytics & Dashboard](#7-analytics--dashboard)
+   - 7.5 [AI Agent Data Layer — Extended Intelligence Requirements](#75-ai-agent-data-layer--extended-intelligence-requirements)
 8. [AI Agent — Core Feature](#8-ai-agent--core-feature)
 9. [Alerts & Notifications](#9-alerts--notifications)
 10. [Functional Requirements](#10-functional-requirements)
@@ -155,8 +156,10 @@ Four-tier architecture. The IBI Sync Service is a Python tier that runs server-s
 
 - **IBI Spark API** — primary transaction and holdings data source.
 - **Anthropic Claude API** — AI Agent, tool-calling, SSE streaming.
-- **Yahoo Finance / Twelve Data** (free tier) — market price fallback.
-- **Exchange rate API** — daily ILS/USD conversion rate.
+- **Yahoo Finance** (`yahoo-finance2` npm) — live prices, benchmark indices (TA-125, S&P 500), OHLCV history for technical analysis.
+- **Bank of Israel API** (free, official) — daily ILS/USD exchange rates with historical backfill.
+- **Finnhub** (free tier, 60 calls/min) — news headlines, earnings calendar, corporate events for held securities.
+- **Twelve Data** (free tier) — fallback market price source if Yahoo Finance is unavailable.
 
 ---
 
@@ -337,6 +340,85 @@ Retained for: first-time backfill before API bootstrap, recovery from API outage
 
 ---
 
+## 7.5 AI Agent Data Layer — Extended Intelligence Requirements
+
+> The current analytics engine (Section 7) provides aggregate statistics: win rate, P&L by ticker, behavioral summaries. This makes the AI Agent a **data reporter** — it can recite what's already on the dashboard. To cross the threshold into genuine **trading intelligence**, the Agent needs enriched context: income analysis, cost awareness, performance attribution, market benchmarks, risk metrics, and event-driven context.
+>
+> Design principles:
+> - All enrichment data flows through the Express API — never fetched client-side.
+> - Graceful degradation: if an external source is unavailable, the Agent acknowledges the gap rather than hallucinating.
+> - Tiered delivery: Tier 1 requires zero external APIs (pure computation on existing data), Tier 2 adds market data APIs, Tier 3 adds advanced intelligence.
+
+### 7.5.1 Tier 1 — Derived from Existing Data (Phase 3)
+
+No external API dependencies — all insights computed from data already in the database.
+
+| Category | Data | Insight Unlocked | Source |
+|---|---|---|---|
+| **Dividend & Income** | Aggregate DIVIDEND/TAX transactions by ticker and period; net income, effective withholding tax rate, dividend yield on cost basis | *"You earned $1,847 in dividends in 2024, net $1,570 after 15% withholding."* | Existing `trades` table where `direction IN ('DIVIDEND', 'TAX')` |
+| **Commission & Cost Analysis** | Total fees per ticker/month/market, avg commission rate, cost as % of realized gains, small-trade cost penalty detection | *"TASE trades cost 0.15% vs 0.08% for US. Trades under ₪5k have 0.9% fee drag — consider batching."* | Existing `trades.commission` field |
+| **Performance Attribution** | Monthly/quarterly P&L time series, per-ticker contribution to each period's gains, P&L contribution percentage | *"Q4 gains: TQQQ drove 66%, Bank Hapoalim 25%, ASML 15%, offset by IONQ -22%."* | Derived from FIFO `matchedLots` grouped by sell date in `pnl.service.ts` |
+| **Win/Loss Streaks** | Current streak, longest winning/losing streak, historical streak-to-outcome correlation, overtrading detection after losing streaks | *"You're on a 5-trade losing streak. Historically, you overtrade after streaks — last time this led to 3 more losses."* | Derived from `matchedLots` sorted by sell date |
+| **Security Metadata** | Sector and industry classification for all ~50 traded tickers | *"60% of your portfolio is in tech — high concentration risk if the sector corrects."* | Static JSON mapping file (one-time manual effort for ~50 tickers). Populates existing `securities` table. |
+| **Holding Period Distribution** | Histogram of holding periods bucketed by outcome (win/loss), short vs. long holds by result | *"Losses: avg 47 days held. Winners: avg 28 days. You're holding losers 68% longer than winners."* | Derived from `matchedLots.holdingDays` |
+
+### 7.5.2 Tier 2 — External Market Data (Phase 4)
+
+Requires external API integrations to provide market context.
+
+| Category | Data | Insight Unlocked | Source |
+|---|---|---|---|
+| **Live Market Prices** | Current price, daily change %, 52-week high/low, volume for each held security | *"TEVA is at its 52-week low — down 34% from peak. Your unrealized loss is -₪8,200."* | Yahoo Finance (`yahoo-finance2` npm package). Cache in `market_prices` table with 15-min staleness. TASE tickers use `.TA` suffix. |
+| **Benchmark Indices** | Daily TA-125 (TASE) and S&P 500 index levels | *"Your TASE portfolio returned +14.2% in 2024 vs TA-125's +9.8% — that's +4.4% alpha."* | Yahoo Finance (`^TA125`, `^GSPC`). Store in `market_prices` with reserved ticker entries. |
+| **Exchange Rate History** | Daily ILS/USD rate backfill for the full trading history | *"Currency movements cost you 3.2% on US positions this year as the shekel strengthened."* | Bank of Israel API (free, official). Populate existing `exchange_rates` table. |
+| **Portfolio Risk Metrics** | Herfindahl concentration index, maximum drawdown, Sharpe ratio, Sortino ratio | *"Top 3 positions are 62% of total value. All 3 are leveraged ETFs — correlated downside risk. Max drawdown last year: -18.4%."* | Computed from positions + live prices + benchmark returns in new `risk.service.ts`. |
+| **Portfolio Snapshots** | Daily total portfolio value, realized/unrealized P&L, position count | Powers the equity curve chart and enables "your portfolio peaked at ₪520k on March 3" style insights. | Daily cron job capturing portfolio state into new `portfolio_snapshots` table. |
+
+### 7.5.3 Tier 3 — Advanced Intelligence (Phase 5)
+
+Aspirational features for full trading intelligence capability.
+
+| Category | Data | Insight Unlocked | Source |
+|---|---|---|---|
+| **Technical Indicators** | 50-day and 200-day moving averages, RSI(14), ATR for held securities | *"TQQQ crossed below its 200-day MA for the first time since your entry — historically a bearish signal."* | Compute from daily price history (Yahoo Finance OHLCV). New `price_history` table. |
+| **News & Corporate Events** | Recent headlines, upcoming earnings dates, ex-dividend dates for held securities | *"NVIDIA reports earnings Thursday — you might want to review your position before the announcement."* | Finnhub free tier (60 calls/min). New `security_events` table. |
+| **Tax Intelligence** | Short-term vs. long-term capital gains classification, tax-loss harvesting candidates, projected annual tax liability | *"Selling IONQ now harvests a ₪1,200 loss that offsets your TQQQ gains — saves ~₪300 in tax."* | Computed from matched lots + Israeli tax rules (25% on listed securities) in new `tax.service.ts`. |
+| **Fundamental Data** | P/E ratio, market cap, dividend yield, beta for held securities | *"Your portfolio beta is 1.4 — significantly riskier than the market. Consider adding lower-beta holdings."* | Yahoo Finance or Financial Modeling Prep free tier. Extend `securities` table. |
+
+### 7.5.4 Schema Changes
+
+| Change | Table | New/Modified Fields | Tier |
+|---|---|---|---|
+| Modify | `securities` | Add `industry TEXT`, `marketCapBucket TEXT` (micro / small / mid / large / mega) | 1 |
+| Modify | `market_prices` | Add `dayChange DECIMAL`, `dayChangePct DECIMAL`, `high52w DECIMAL`, `low52w DECIMAL`, `volume INT` | 2 |
+| Populate | `exchange_rates` | No schema change — backfill historical ILS/USD rates | 2 |
+| New table | `portfolio_snapshots` | `id`, `date` (unique), `totalValue`, `totalRealizedPnl`, `totalUnrealizedPnl`, `positionCount`, `snapshotData` (JSON) | 2 |
+| New table | `price_history` | `id`, `ticker`, `date`, `open`, `high`, `low`, `close`, `volume`, `currency` — unique on `(ticker, date)` | 3 |
+| New table | `security_events` | `id`, `ticker`, `eventType`, `eventDate`, `headline`, `source`, `fetchedAt` | 3 |
+
+### 7.5.5 New Agent Tools
+
+These 13 tools extend Section 8.4's original 11 tools, bringing the total to **24 agent tools**.
+
+| Tool Name | Tier | Description |
+|---|---|---|
+| `get_dividend_summary` | 1 | Returns dividend income and tax withheld grouped by ticker and time period |
+| `get_cost_analysis` | 1 | Returns commission totals, average rates, and fee drag on returns |
+| `get_performance_timeline` | 1 | Returns P&L time series (monthly/quarterly) with per-ticker contribution attribution |
+| `get_streaks` | 1 | Returns current and historical win/loss streaks with behavioral correlation |
+| `get_sector_exposure` | 1 | Returns portfolio allocation by sector with concentration warnings |
+| `get_security_info` | 1 | Returns metadata for a security: sector, industry, market cap bucket |
+| `get_holding_period_analysis` | 1 | Returns holding period distribution bucketed by outcome |
+| `get_benchmark_comparison` | 2 | Compares portfolio or ticker returns against TA-125 and S&P 500 |
+| `get_currency_impact` | 2 | Shows how ILS/USD rate changes affected portfolio value over a period |
+| `get_risk_report` | 2 | Returns concentration index, max drawdown, Sharpe ratio, Sortino ratio |
+| `get_technical_indicators` | 3 | Returns moving averages, RSI, support/resistance for a given ticker |
+| `get_news` | 3 | Returns recent news headlines for a ticker or the overall portfolio |
+| `get_upcoming_events` | 3 | Returns earnings dates, ex-dividend dates for held securities |
+| `get_tax_report` | 3 | Returns realized gains by holding period and tax-loss harvesting candidates |
+
+---
+
 ## 8. AI Agent — Core Feature
 
 > The AI Agent is the primary interface for insight and decision-making.
@@ -395,11 +477,13 @@ Retained for: first-time backfill before API bootstrap, recovery from API outage
 
 - **Model:** `claude-sonnet-4-20250514` via the Anthropic Messages API.
 - **System prompt:** live portfolio summary, open positions, behavioral stats, and sync status injected server-side on every request.
-- **Tool use:** 11 backend tools (see Section 8.4) for all data access and write operations.
+- **Tool use:** 24 backend tools (see Sections 7.5.5 and 8.4) for all data access and write operations.
 - **Streaming:** SSE token-by-token; rate limiting and `max_tokens` cap configured server-side.
 - **Context management:** older conversation turns summarized to stay within model context limits.
 
 ### 8.4 Agent Tool Definitions
+
+#### Core Tools (11 — original)
 
 | Tool Name | Description |
 |---|---|
@@ -414,6 +498,25 @@ Retained for: first-time backfill before API bootstrap, recovery from API outage
 | `delete_alert` | Deletes an alert by ID |
 | `trigger_sync` | Initiates an on-demand incremental sync from the IBI API |
 | `get_sync_status` | Returns last sync timestamp, records synced, and any error details |
+
+#### Extended Intelligence Tools (13 — see Section 7.5.5 for full details)
+
+| Tool Name | Tier | Description |
+|---|---|---|
+| `get_dividend_summary` | 1 | Dividend income and tax withheld by ticker and period |
+| `get_cost_analysis` | 1 | Commission totals, average rates, fee drag on returns |
+| `get_performance_timeline` | 1 | P&L time series with per-ticker contribution attribution |
+| `get_streaks` | 1 | Win/loss streaks with behavioral correlation |
+| `get_sector_exposure` | 1 | Portfolio allocation by sector with concentration warnings |
+| `get_security_info` | 1 | Security metadata: sector, industry, market cap bucket |
+| `get_holding_period_analysis` | 1 | Holding period distribution by outcome |
+| `get_benchmark_comparison` | 2 | Portfolio/ticker returns vs TA-125 and S&P 500 |
+| `get_currency_impact` | 2 | ILS/USD rate impact on portfolio value |
+| `get_risk_report` | 2 | Concentration, drawdown, Sharpe, Sortino ratios |
+| `get_technical_indicators` | 3 | Moving averages, RSI, support/resistance |
+| `get_news` | 3 | Recent headlines for a ticker or portfolio |
+| `get_upcoming_events` | 3 | Earnings dates, ex-dividend dates |
+| `get_tax_report` | 3 | Gains by holding period, tax-loss harvesting candidates |
 
 ---
 
@@ -462,7 +565,7 @@ Retained for: first-time backfill before API bootstrap, recovery from API outage
 | FR-20 | Analytics | TASE vs. US equities performance comparison | Should Have |
 | FR-21 | AI Agent | Persistent chat panel visible on every page | Must Have |
 | FR-22 | AI Agent | Agent answers natural language portfolio questions using live data | Must Have |
-| FR-23 | AI Agent | Agent calls 11 tool definitions for all data access | Must Have |
+| FR-23 | AI Agent | Agent calls 24 tool definitions for all data access (11 core + 13 extended) | Must Have |
 | FR-24 | AI Agent | Responses streamed token-by-token via SSE | Must Have |
 | FR-25 | AI Agent | Agent can trigger and report on IBI data syncs | Must Have |
 | FR-26 | AI Agent | Agent provides behavioral coaching and trade recommendations | Must Have |
@@ -473,6 +576,19 @@ Retained for: first-time backfill before API bootstrap, recovery from API outage
 | FR-31 | Alerts | Alert inbox with full triggered and dismissed history | Must Have |
 | FR-32 | Security | All credentials stored server-side in environment variables only | Must Have |
 | FR-33 | Data | Toggle all monetary values between ILS and USD | Should Have |
+| FR-34 | AI Agent | Agent provides dividend income and tax withholding analysis from stored transactions | Must Have |
+| FR-35 | AI Agent | Agent analyzes commission costs, fee drag, and cost efficiency across markets | Must Have |
+| FR-36 | AI Agent | Agent provides performance attribution — which tickers drove gains each period | Must Have |
+| FR-37 | AI Agent | Agent detects win/loss streaks and correlates with behavioral patterns | Must Have |
+| FR-38 | AI Agent | Agent reports sector concentration risk using security metadata | Must Have |
+| FR-39 | Market Data | Live market prices fetched and cached for open positions (Yahoo Finance) | Must Have |
+| FR-40 | Market Data | Benchmark index data (TA-125, S&P 500) fetched for relative performance | Should Have |
+| FR-41 | Market Data | Exchange rate history backfilled for cross-currency P&L normalization | Should Have |
+| FR-42 | Analytics | Portfolio risk metrics computed: concentration, max drawdown, Sharpe ratio | Should Have |
+| FR-43 | Analytics | Daily portfolio snapshots stored for equity curve and historical tracking | Should Have |
+| FR-44 | Market Data | Technical indicators (MA, RSI) computed from daily price history | Nice to Have |
+| FR-45 | Market Data | News headlines and corporate events fetched for held securities | Nice to Have |
+| FR-46 | AI Agent | Agent identifies tax-loss harvesting candidates and projects tax liability | Nice to Have |
 
 ---
 
@@ -558,9 +674,11 @@ The AI Agent chat panel is a **persistent right-side drawer** available on every
 
 - Persistent chat panel with Claude integration and SSE streaming.
 - System prompt with live portfolio context and sync status.
-- All 11 agent tools implemented (Section 8.4).
+- All 11 core agent tools implemented (Section 8.4).
 - Quick-action chips including `Sync now`.
 - Conversation history storage.
+- **Tier 1 data enrichment (Section 7.5.1):** dividend/income aggregation, commission cost analysis, performance attribution, win/loss streaks, security metadata mapping (~50 tickers), holding period analysis.
+- 7 new Tier 1 agent tools: `get_dividend_summary`, `get_cost_analysis`, `get_performance_timeline`, `get_streaks`, `get_sector_exposure`, `get_security_info`, `get_holding_period_analysis`.
 
 ### Phase 4 — Alerts & Behavioral Analysis (Weeks 9–10)
 
@@ -569,6 +687,8 @@ The AI Agent chat panel is a **persistent right-side drawer** available on every
 - Behavioral pattern analysis module.
 - What-if scenario analysis via AI Agent.
 - Settings page: currency toggle, cost basis method, sync schedule.
+- **Tier 2 data enrichment (Section 7.5.2):** Yahoo Finance integration for live prices and benchmark indices (TA-125, S&P 500), Bank of Israel exchange rate backfill, portfolio risk metrics (`risk.service.ts`), daily portfolio snapshots.
+- 3 new Tier 2 agent tools: `get_benchmark_comparison`, `get_currency_impact`, `get_risk_report`.
 
 ### Phase 5 — Polish & Hardening (Weeks 11–12)
 
@@ -577,6 +697,8 @@ The AI Agent chat panel is a **persistent right-side drawer** available on every
 - CSV/Excel fallback import polished as a secondary data path.
 - Export dashboard views to PDF or Excel.
 - Browser push notifications for alerts (optional).
+- **Tier 3 data enrichment (Section 7.5.3):** daily OHLCV history and technical indicators, Finnhub news/events integration, tax intelligence with harvesting candidates.
+- 4 new Tier 3 agent tools: `get_technical_indicators`, `get_news`, `get_upcoming_events`, `get_tax_report`.
 
 ---
 
@@ -694,6 +816,84 @@ Agent: You perform best buying large-cap Israeli banks during dips and holding
        this month — that matches your historical entry pattern.
 
        ⚠  Not financial advice. Please conduct your own due diligence.
+```
+
+### Example 5: Dividend income analysis (Tier 1)
+
+```
+User:  How much dividend income did I earn in 2024?
+
+Agent: In 2024, you received $1,847 in gross dividends across 6 securities.
+       After $277 in withholding tax (15% average rate), net dividend income: $1,570.
+       Top payers: TQQQ ($680), SPXL ($412), ASML ($340).
+       Your portfolio dividend yield is 1.8% on cost basis.
+```
+
+### Example 6: Commission cost awareness (Tier 1)
+
+```
+User:  Are my trading fees eating into my returns?
+
+Agent: In 2024, you paid ₪4,230 in total commissions (₪2,100 TASE + $580 US).
+       That's 1.4% of your total realized gains.
+       TASE trades cost 0.15% on average vs 0.08% for US trades.
+       Small trades under ₪5,000 had an effective commission rate of 0.9% —
+       consider batching these to reduce fee drag.
+```
+
+### Example 7: Performance attribution (Tier 1)
+
+```
+User:  What drove my gains last quarter?
+
+Agent: Q4 2024 realized P&L: +₪12,400.
+       Attribution:
+       • TQQQ: +₪8,200 (66% of gains) — 3 winning trades, avg +12% return
+       • Bank Hapoalim: +₪3,100 (25%) — held through dividend + sold at target
+       • ASML: +₪1,800 (15%) — single trade, good timing
+       • IONQ: -₪2,700 (-22%) — loss offset by others
+       You're on a 4-trade winning streak heading into Q1.
+```
+
+### Example 8: Benchmark comparison (Tier 2)
+
+```
+User:  Am I beating the market?
+
+Agent: Your TASE portfolio returned +14.2% in 2024, vs TA-125's +9.8%.
+       That's +4.4% alpha — nice work, especially on bank stocks.
+       Your US portfolio returned +22.1% vs S&P 500's +24.3%.
+       Slight underperformance of -2.2%, mainly due to early IONQ exit.
+       Overall: you're outperforming on TASE and nearly matching the US market.
+```
+
+### Example 9: Portfolio risk warning (Tier 2)
+
+```
+User:  How risky is my portfolio right now?
+
+Agent: Your portfolio concentration is high — Herfindahl index 0.18
+       (moderate-to-concentrated). Top 3 positions are 62% of total value.
+       All 3 are leveraged ETFs (TQQQ, SPXL, SOXL) — correlated downside risk.
+       Max drawdown in the past year: -18.4% (October dip).
+       Sharpe ratio: 0.9 (decent, but below 1.0 threshold).
+       Consider: your winners are heavily tech-correlated. A sector rotation
+       could hit all three simultaneously.
+```
+
+### Example 10: Tax-loss harvesting (Tier 3)
+
+```
+User:  Should I do any tax-loss harvesting before year-end?
+
+Agent: You have ₪8,400 in realized gains this tax year (25% rate = ₪2,100 tax).
+       Current unrealized losses that could offset:
+       • IONQ: -$320 unrealized (held 4 months)
+       • SOXL: -₪1,200 unrealized (held 2 months)
+       Selling both would save ~₪380 in taxes. However, SOXL has recovered 8%
+       this week — you might want to wait.
+
+       ⚠  Not tax advice. Please consult your tax professional.
 ```
 
 ---

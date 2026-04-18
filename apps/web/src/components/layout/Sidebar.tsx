@@ -8,7 +8,7 @@ const navItems = [
   { href: "/positions", label: "Positions", icon: "💼" },
   { href: "/history", label: "Trade History", icon: "📋" },
   { href: "/analytics", label: "Analytics", icon: "📈" },
-  { href: "/import", label: "Import", icon: "📁" },
+  { href: "/import", label: "Import", icon: "📥" },
   { href: "/alerts", label: "Alerts", icon: "🔔" },
   { href: "/settings", label: "Settings", icon: "⚙️" },
 ];

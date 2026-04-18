@@ -1,4 +1,5 @@
 import type { Currency, Market } from "./trade";
+import type { PriceSource } from "./market";
 
 export interface Position {
   ticker: string;
@@ -11,6 +12,10 @@ export interface Position {
   unrealizedPnl: number;
   unrealizedPnlPct: number;
   marketValue: number;
+  priceSource: PriceSource;
+  dayChange: number | null;
+  dayChangePct: number | null;
+  weight: number;
 }
 
 export interface PortfolioSummary {

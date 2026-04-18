@@ -7,6 +7,7 @@ export interface SyncLogEntry {
   recordsAdded: number;
   dateFrom: string;
   dateTo: string;
+  fileName?: string;
   errorMessage?: string;
 }
 
