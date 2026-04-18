@@ -44,6 +44,9 @@ logs/
 coverage/
 .nyc_output/
 
+# Playwright / MCP browser artifacts
+.playwright-mcp/
+
 # Personal trading data (do not commit) — top-level /data only
 IBI_transactions_*.xlsx
 /data/
