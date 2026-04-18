@@ -11,15 +11,15 @@ The full PRD is in `Takumi_PRD.md` at the project root — refer to it for detai
 ## Architecture
 
 ```
-Browser (Next.js 14 :3000)  →  Express API (:3001)  →  SQLite (Prisma)
-                                                              ↕
-                                                      Anthropic Claude API
+Browser  →  Next.js web (basic auth)  →  rewrites /api/*  →  Express API (private)  →  Postgres
+                                                                   ↕
+                                                            Anthropic Claude API
 ```
 
-- **Frontend** talks only to Express.
-- **Express** is the single gateway — orchestrates import, analytics, AI, alerts.
+- **Frontend** calls relative `/api/*` URLs. Next.js rewrites them server-side to the API service (via `API_URL` env var). The browser never sees the API origin directly — one auth prompt, no CORS.
+- **Express** is the single gateway — orchestrates import, analytics, AI, alerts. Defense-in-depth: also protected by basic auth.
 - **Data import** — XLSX files exported from IBI are uploaded via the `/import` page and parsed by `xlsx-import.service.ts`.
-- **Database** is SQLite for dev (`packages/db/prisma/takumi.db`), PostgreSQL for prod.
+- **Database** — Prisma schema is PostgreSQL. Dev runs against local Postgres (or swap provider back to sqlite locally). Prod uses Railway Postgres.
 
 ## Monorepo Structure
 
@@ -242,6 +242,38 @@ All monetary fields use `Decimal` (not Float).
   - News & corporate events via Finnhub free tier (new `security_events` table)
   - Tax intelligence: short/long-term gains classification, tax-loss harvesting candidates
 - New Tier 3 agent tools: `get_technical_indicators`, `get_news`, `get_upcoming_events`, `get_tax_report`
+
+## Deployment (Railway)
+
+Hosted on Railway at https://web-production-7a48c.up.railway.app — project ID `3a1f80a2-97df-4762-9187-4e6cf4781e76`. Three services: `web`, `api`, `Postgres`.
+
+**Access** — HTTP Basic Auth (user `nitzan`, password stored in `BASIC_AUTH_PASS` on both `web` and `api` services). Enforced by Next.js `src/middleware.ts` on the web service and `express-basic-auth` on the API service. Change the password any time via `railway variable set BASIC_AUTH_PASS=... --service web` and again for `--service api`.
+
+**Service topology:**
+- `web` (Next.js) — only service with a public domain. Middleware enforces basic auth on all routes. `next.config.mjs` rewrites `/api/:path*` to `${API_URL}/api/:path*` server-side, where `API_URL=http://${{api.RAILWAY_PRIVATE_DOMAIN}}:${{api.PORT}}`.
+- `api` (Express) — private-only (no public domain). Explicitly listens on `::` (IPv6+IPv4) which Railway's private networking requires. `PORT=3001` must be set as a service variable so `${{api.PORT}}` resolves in the web service's `API_URL`.
+- `Postgres` — managed plugin, referenced as `${{Postgres.DATABASE_URL}}` from api.
+
+**Deploy flow:**
+- `railway up --service <svc> --detach -m "msg"` — uploads local tree. This is how we currently ship (GitHub repo is not yet connected as a Railway source).
+- API build: `pnpm install --frozen-lockfile=false && pnpm --filter @takumi/db exec prisma generate`.
+- API preDeploy: `pnpm --filter @takumi/db exec prisma db push` (idempotent schema sync — keep schema compatible or push will fail without `--accept-data-loss`).
+- API start: `pnpm --filter @takumi/api start` (uses `tsx`, not a compiled `dist/`, so workspace TypeScript deps work).
+- Web build: `pnpm install --frozen-lockfile=false && pnpm --filter @takumi/web build`.
+- Web start: `pnpm --filter @takumi/web start` → `next start -H ::`.
+
+**Required service variables:**
+
+| Service | Variable | Value |
+|---|---|---|
+| api | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
+| api | `ANTHROPIC_API_KEY` | Claude key |
+| api | `PORT` | `3001` (explicit, so `${{api.PORT}}` resolves for web's `API_URL`) |
+| api | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | shared with web |
+| web | `API_URL` | `http://${{api.RAILWAY_PRIVATE_DOMAIN}}:${{api.PORT}}` |
+| web | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | shared with api |
+
+**Local dev vs prod** — In dev, leave basic auth vars unset and both the Next.js middleware and Express middleware become no-ops. `API_URL` defaults to `http://localhost:3001`. Same `/api/*` paths work locally via the same rewrite.
 
 ## External Services
 
