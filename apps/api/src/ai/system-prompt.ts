@@ -15,8 +15,10 @@ export async function buildSystemPrompt(): Promise<string> {
   ]);
 
   const positionCount = positions.length;
-  const totalValue = positions.reduce((s, p) => s + p.marketValue, 0);
-  const totalUnrealizedPnl = positions.reduce((s, p) => s + p.unrealizedPnl, 0);
+  // ILS-normalized totals (home currency). Summing native marketValue across
+  // TASE (ILS) and US (USD) positions gives garbage numbers.
+  const totalValueIls = positions.reduce((s, p) => s + p.marketValueIls, 0);
+  const totalUnrealizedPnlIls = positions.reduce((s, p) => s + p.unrealizedPnlIls, 0);
   const top5 = positions.slice(0, 5);
 
   const now = new Date().toISOString();
@@ -29,8 +31,8 @@ export async function buildSystemPrompt(): Promise<string> {
 
     portfolioContext = `CURRENT PORTFOLIO (as of ${now}):
 - Open Positions: ${positionCount}
-- Total Market Value: ${totalValue.toFixed(2)}
-- Total Unrealized P&L: ${totalUnrealizedPnl >= 0 ? '+' : ''}${totalUnrealizedPnl.toFixed(2)}
+- Total Market Value: ₪${totalValueIls.toFixed(2)} (ILS-normalized; USD positions converted at current BOI rate)
+- Total Unrealized P&L: ${totalUnrealizedPnlIls >= 0 ? '+' : ''}₪${totalUnrealizedPnlIls.toFixed(2)} (ILS-normalized)
 - Realized P&L by Currency:
 ${pnlLines}
 - Win Rate: ${summary.winRate.toFixed(1)}%

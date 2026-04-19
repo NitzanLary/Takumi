@@ -12,6 +12,12 @@ export interface Position {
   unrealizedPnl: number;
   unrealizedPnlPct: number;
   marketValue: number;
+  // ILS-normalized fields — use these for cross-position aggregation/weights.
+  // Equal to the native fields for ILS positions; for USD positions, converted
+  // at the current BOI rate.
+  marketValueIls: number;
+  totalCostIls: number;
+  unrealizedPnlIls: number;
   priceSource: PriceSource;
   dayChange: number | null;
   dayChangePct: number | null;

@@ -94,7 +94,7 @@ export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
     largestWin,
     largestLoss,
     openPositionCount: positions.length,
-    totalOpenValue: positions.reduce((s, p) => s + p.marketValue, 0),
+    totalOpenValue: positions.reduce((s, p) => s + p.marketValueIls, 0),
   };
 }
 

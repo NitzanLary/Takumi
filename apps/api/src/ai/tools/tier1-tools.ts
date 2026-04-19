@@ -376,14 +376,15 @@ async function execGetSectorExposure(): Promise<unknown> {
     return { message: 'No open positions to analyze.' };
   }
 
-  const bySector = new Map<string, { value: number; weight: number; tickers: string[] }>();
+  const bySector = new Map<string, { valueIls: number; weight: number; tickers: string[] }>();
 
   for (const p of positions) {
     const mapping = sectorMap[p.ticker];
     const sector = mapping?.sector || 'Unknown';
 
-    const entry = bySector.get(sector) || { value: 0, weight: 0, tickers: [] };
-    entry.value += p.marketValue;
+    const entry = bySector.get(sector) || { valueIls: 0, weight: 0, tickers: [] };
+    // Use ILS-normalized value so TASE and US positions aggregate coherently.
+    entry.valueIls += p.marketValueIls;
     entry.weight += p.weight;
     entry.tickers.push(p.ticker);
     bySector.set(sector, entry);
@@ -392,7 +393,7 @@ async function execGetSectorExposure(): Promise<unknown> {
   const sectors = Array.from(bySector.entries())
     .map(([sector, data]) => ({
       sector,
-      marketValue: data.value,
+      marketValueIls: data.valueIls,
       weight: data.weight,
       positionCount: data.tickers.length,
       tickers: data.tickers,

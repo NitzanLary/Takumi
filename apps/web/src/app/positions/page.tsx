@@ -14,6 +14,9 @@ interface OpenPosition {
   totalCost: number;
   currentPrice: number;
   marketValue: number;
+  marketValueIls: number;
+  totalCostIls: number;
+  unrealizedPnlIls: number;
   unrealizedPnl: number;
   unrealizedPnlPct: number;
   weight: number;
@@ -35,9 +38,12 @@ export default function PositionsPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["positions"] }),
   });
 
-  const totalValue = positions?.reduce((s, p) => s + p.marketValue, 0) ?? 0;
-  const totalCost = positions?.reduce((s, p) => s + p.totalCost, 0) ?? 0;
-  const totalUnrealizedPnl = totalValue - totalCost;
+  // Totals are shown in ILS (home currency). Summing native marketValue across
+  // TASE (ILS) and US (USD) positions would produce a meaningless mixed-currency
+  // number (1 USD ≈ 3.7 ILS). The API pre-computes the ILS-normalized fields.
+  const totalValueIls = positions?.reduce((s, p) => s + p.marketValueIls, 0) ?? 0;
+  const totalCostIls = positions?.reduce((s, p) => s + p.totalCostIls, 0) ?? 0;
+  const totalUnrealizedPnlIls = totalValueIls - totalCostIls;
   const hasPlaceholders = positions?.some((p) => p.priceSource === "placeholder");
 
   return (
@@ -74,21 +80,21 @@ export default function PositionsPage() {
             </p>
           </div>
           <div className="rounded-xl border border-gray-200 bg-white p-4">
-            <p className="text-sm text-gray-500">Total Cost Basis</p>
+            <p className="text-sm text-gray-500">Total Cost Basis (₪)</p>
             <p className="mt-1 text-xl font-semibold text-gray-900">
-              {formatNumber(Math.round(totalCost))}
+              {formatCurrency(Math.round(totalCostIls), "ILS")}
             </p>
           </div>
           <div className="rounded-xl border border-gray-200 bg-white p-4">
-            <p className="text-sm text-gray-500">Total Market Value</p>
+            <p className="text-sm text-gray-500">Total Market Value (₪)</p>
             <p className="mt-1 text-xl font-semibold text-gray-900">
-              {formatNumber(Math.round(totalValue))}
+              {formatCurrency(Math.round(totalValueIls), "ILS")}
             </p>
           </div>
           <div className="rounded-xl border border-gray-200 bg-white p-4">
-            <p className="text-sm text-gray-500">Unrealized P&L</p>
-            <p className={`mt-1 text-xl font-semibold ${totalUnrealizedPnl >= 0 ? "text-green-600" : "text-red-600"}`}>
-              {formatNumber(Math.round(totalUnrealizedPnl))}
+            <p className="text-sm text-gray-500">Unrealized P&L (₪)</p>
+            <p className={`mt-1 text-xl font-semibold ${totalUnrealizedPnlIls >= 0 ? "text-green-600" : "text-red-600"}`}>
+              {formatCurrency(Math.round(totalUnrealizedPnlIls), "ILS")}
             </p>
           </div>
         </div>

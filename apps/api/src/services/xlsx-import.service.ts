@@ -23,7 +23,7 @@ const COLUMN_MAP: Record<string, string> = {
 
 // ─── Transaction type → Direction mapping ─────────────────────────────────
 
-const DIRECTION_MAP: Record<string, Direction> = {
+export const DIRECTION_MAP: Record<string, Direction> = {
   "קניה חול מטח": "BUY",
   "קניה רצף": "BUY",
   "מכירה חול מטח": "SELL",
@@ -43,7 +43,7 @@ const DIRECTION_MAP: Record<string, Direction> = {
 
 // ─── Security name parsing ────────────────────────────────────────────────
 
-interface ParsedSecurity {
+export interface ParsedSecurity {
   ticker: string;
   securityName: string;
   market: Market | "FX" | "ADMIN";
@@ -63,7 +63,7 @@ interface ParsedSecurity {
  *   "תכ.בנקיםישרא"       → use symbol column (TASE)
  *   Admin names           → use symbol column
  */
-function parseSecurity(
+export function parseSecurity(
   securityName: string,
   symbol: string | number,
   hebrewType: string,
@@ -106,14 +106,14 @@ function parseSecurity(
     return { ticker: simpleUsMatch[1], securityName: name, market: "NYSE" };
   }
 
-  // TASE securities — symbol is a numeric paper number
-  if (/^\d+$/.test(sym) && !["900", "9992975", "9992983"].includes(sym)) {
-    return { ticker: sym, securityName: name, market: "TASE" };
+  // Admin/cash operations — IBI uses 900 and the 999xxxx range for tax/admin pseudo-tickers.
+  if (sym === "900" || /^9{3}\d{4}$/.test(sym)) {
+    return { ticker: sym, securityName: name, market: "ADMIN" };
   }
 
-  // Admin/cash operations (symbol 900, 9992975, 9992983)
-  if (["900", "9992975", "9992983"].includes(sym)) {
-    return { ticker: sym, securityName: name, market: "ADMIN" };
+  // TASE securities — symbol is a numeric paper number
+  if (/^\d+$/.test(sym)) {
+    return { ticker: sym, securityName: name, market: "TASE" };
   }
 
   // US ticker directly as symbol (for core trades like "TQQQ", "SPXL")
@@ -163,12 +163,30 @@ function generateTradeId(row: Record<string, unknown>): string {
   return createHash("sha256").update(key).digest("hex").slice(0, 16);
 }
 
-// ─── Special cases for קניה שח ────────────────────────────────────────────
+// ─── Special cases for קניה שח / מכירה שח ───────────────────────────────
+//
+// IBI uses these two action types for three different real-world events:
+//   1. FX conversion (buying/selling USD with shekels) — security looks like "B USD/ILS 3.7"
+//   2. TASE security buy/sell paid in shekels — typically Israeli mutual funds (קרנות נאמנות)
+//      that don't trade on the continuous market and so don't use קניה רצף / מכירה רצף
+//   3. Tax-related admin entries — security name contains "מס ששולם" or symbol is an admin code
+//
+// We default-map them to CONVERSION/CREDIT (the FX case), then refine based on the
+// parsed market: TASE → real BUY/SELL, ADMIN → tax/admin (handled via market check).
 
-/** 2 of the 36 קניה שח rows are tax-related (מס ששולם), not FX conversions */
-function refineDirection(direction: Direction, securityName: string): Direction {
+export function refineDirection(
+  direction: Direction,
+  securityName: string,
+  market: Market | "FX" | "ADMIN",
+): Direction {
   if (direction === "CONVERSION" && securityName.includes("מס ששולם")) {
     return "TAX";
+  }
+  if (direction === "CONVERSION" && market === "TASE") {
+    return "BUY";
+  }
+  if (direction === "CREDIT" && market === "TASE") {
+    return "SELL";
   }
   return direction;
 }
@@ -284,9 +302,8 @@ export async function importXlsx(buffer: Buffer, fileName?: string): Promise<Imp
       }
 
       const securityName = String(row.securityName || "");
-      direction = refineDirection(direction, securityName);
-
       const parsed = parseSecurity(securityName, row.symbol as string | number, hebrewType);
+      direction = refineDirection(direction, securityName, parsed.market);
       const tradeId = generateTradeId(row);
       const tradeDate = parseDate(String(row.date || ""));
       const currency = parseCurrency(String(row.currency || ""));

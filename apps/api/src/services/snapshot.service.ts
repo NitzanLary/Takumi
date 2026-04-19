@@ -32,8 +32,11 @@ export async function captureSnapshot(): Promise<PortfolioSnapshotData> {
     getPortfolioSummary(),
   ]);
 
-  const totalValue = positions.reduce((sum, p) => sum + p.marketValue, 0);
-  const totalCostBasis = positions.reduce((sum, p) => sum + p.totalCost, 0);
+  // Totals are stored in ILS (home currency) so the equity curve is coherent
+  // across TASE and US positions. Summing native marketValue across ILS+USD
+  // would double-count USD positions' magnitude (1 USD ≈ 3.7 ILS).
+  const totalValue = positions.reduce((sum, p) => sum + p.marketValueIls, 0);
+  const totalCostBasis = positions.reduce((sum, p) => sum + p.totalCostIls, 0);
   const unrealizedPnl = totalValue - totalCostBasis;
 
   const snapshot = await prisma.portfolioSnapshot.create({
@@ -51,6 +54,7 @@ export async function captureSnapshot(): Promise<PortfolioSnapshotData> {
           avgCostBasis: p.avgCostBasis,
           currentPrice: p.currentPrice,
           marketValue: p.marketValue,
+          marketValueIls: p.marketValueIls,
           unrealizedPnl: p.unrealizedPnl,
           priceSource: p.priceSource,
           currency: p.currency,

@@ -8,6 +8,7 @@
 
 import { runFifoMatching, type OpenLot } from './pnl.service.js';
 import { getLatestPrices } from './market.service.js';
+import { getCurrentRate } from './exchange-rate.service.js';
 import type { PriceSource } from '@takumi/types';
 
 export interface OpenPosition {
@@ -20,9 +21,16 @@ export interface OpenPosition {
   totalCost: number;
   currentPrice: number;
   marketValue: number;
+  // ILS-normalized values. Equal to the native fields for ILS positions;
+  // for USD positions, converted using the current BOI rate. Use these
+  // (not the native fields) for any cross-position aggregation, weights,
+  // or totals — summing ILS + USD without conversion is a bug.
+  marketValueIls: number;
+  totalCostIls: number;
+  unrealizedPnlIls: number;
   unrealizedPnl: number;
   unrealizedPnlPct: number;
-  weight: number; // % of total portfolio
+  weight: number; // % of total portfolio (ILS-normalized)
   priceSource: PriceSource;
   dayChange: number | null;
   dayChangePct: number | null;
@@ -51,8 +59,14 @@ export async function getOpenPositions(): Promise<OpenPosition[]> {
     currency: lots[0].currency,
   }));
 
-  // Fetch live prices
-  const prices = await getLatestPrices(tickerInfos);
+  // Fetch live prices and the current USD→ILS rate in parallel
+  const [prices, usdIlsRate] = await Promise.all([
+    getLatestPrices(tickerInfos),
+    getCurrentRate().catch(() => {
+      console.warn('[positions] No USD/ILS rate available; USD positions will not be weighted correctly');
+      return 1;
+    }),
+  ]);
 
   const positions: OpenPosition[] = [];
 
@@ -69,6 +83,11 @@ export async function getOpenPositions(): Promise<OpenPosition[]> {
     const unrealizedPnl = marketValue - totalCost;
     const unrealizedPnlPct = totalCost > 0 ? (unrealizedPnl / totalCost) * 100 : 0;
 
+    const fxRate = first.currency === 'USD' ? usdIlsRate : 1;
+    const marketValueIls = marketValue * fxRate;
+    const totalCostIls = totalCost * fxRate;
+    const unrealizedPnlIls = unrealizedPnl * fxRate;
+
     positions.push({
       ticker,
       securityName: first.securityName,
@@ -79,6 +98,9 @@ export async function getOpenPositions(): Promise<OpenPosition[]> {
       totalCost,
       currentPrice,
       marketValue,
+      marketValueIls,
+      totalCostIls,
+      unrealizedPnlIls,
       unrealizedPnl,
       unrealizedPnlPct,
       weight: 0, // calculated after all positions are built
@@ -88,11 +110,13 @@ export async function getOpenPositions(): Promise<OpenPosition[]> {
     });
   }
 
-  // Calculate portfolio weights
-  const totalValue = positions.reduce((sum, p) => sum + p.marketValue, 0);
+  // Portfolio weights — use ILS-normalized value so TASE and US positions are
+  // comparable. Summing native marketValue across currencies would inflate
+  // TASE weights (since 1 USD ≈ 3.7 ILS).
+  const totalValueIls = positions.reduce((sum, p) => sum + p.marketValueIls, 0);
   for (const p of positions) {
-    p.weight = totalValue > 0 ? (p.marketValue / totalValue) * 100 : 0;
+    p.weight = totalValueIls > 0 ? (p.marketValueIls / totalValueIls) * 100 : 0;
   }
 
-  return positions.sort((a, b) => b.marketValue - a.marketValue);
+  return positions.sort((a, b) => b.marketValueIls - a.marketValueIls);
 }
