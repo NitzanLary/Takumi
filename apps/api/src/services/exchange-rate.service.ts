@@ -12,29 +12,36 @@ const BOI_API_BASE = 'https://edge.boi.gov.il/FusionEdgeServer/sdmx/v2/data/data
 
 /**
  * Get the current (latest) ILS/USD exchange rate.
+ *
+ * BOI doesn't publish on Fri/Sat/Sun or Israeli holidays, so "today's rate"
+ * is often unavailable. We accept any rate from the last 7 days as current,
+ * and on a miss we fetch a 10-day window from BOI (persisting everything we
+ * get) rather than just today — this also self-heals an empty DB on first use.
  */
 export async function getCurrentRate(): Promise<number> {
-  // Try DB first
-  const latest = await prisma.exchangeRate.findFirst({
+  const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+  const recent = await prisma.exchangeRate.findFirst({
+    where: { date: { gte: weekAgo } },
     orderBy: { date: 'desc' },
   });
+  if (recent) return Number(recent.rate);
 
-  if (latest) {
-    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    if (latest.date >= dayAgo) {
-      return Number(latest.rate);
-    }
-  }
-
-  // Fetch today's rate
   const today = formatDate(new Date());
-  const rates = await fetchRatesFromBoi(today, today);
+  const tenDaysAgo = formatDate(new Date(Date.now() - 10 * 24 * 60 * 60 * 1000));
+  const rates = await fetchRatesFromBoi(tenDaysAgo, today);
+
   if (rates.length > 0) {
+    for (const { date, rate } of rates) {
+      await prisma.exchangeRate
+        .upsert({ where: { date }, create: { date, rate }, update: { rate } })
+        .catch(() => {});
+    }
     return rates[rates.length - 1].rate;
   }
 
-  // Fall back to latest in DB
-  if (latest) return Number(latest.rate);
+  // Last resort: any historical rate, even if older than a week
+  const anyRate = await prisma.exchangeRate.findFirst({ orderBy: { date: 'desc' } });
+  if (anyRate) return Number(anyRate.rate);
 
   throw new Error('No exchange rate data available');
 }
