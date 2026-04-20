@@ -8,15 +8,16 @@
 
 import { prisma } from '../lib/db.js';
 
-const BOI_API_BASE = 'https://edge.boi.gov.il/FusionEdgeServer/sdmx/v2/data/dataflow/BOI/EXR/1.0';
+const BOI_SDMX_BASE = 'https://edge.boi.gov.il/FusionEdgeServer/sdmx/v2/data/dataflow/BOI/EXR/1.0';
+const BOI_PUBLIC_API_CURRENT = 'https://boi.org.il/PublicApi/GetExchangeRate?key=USD';
 
 /**
  * Get the current (latest) ILS/USD exchange rate.
  *
  * BOI doesn't publish on Fri/Sat/Sun or Israeli holidays, so "today's rate"
- * is often unavailable. We accept any rate from the last 7 days as current,
- * and on a miss we fetch a 10-day window from BOI (persisting everything we
- * get) rather than just today — this also self-heals an empty DB on first use.
+ * is often stale by a few days. We accept any rate from the last 7 days as
+ * current, and on a miss fetch the latest from BOI's PublicApi and persist it.
+ * (The older SDMX endpoint used for backfill now returns empty bodies.)
  */
 export async function getCurrentRate(): Promise<number> {
   const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
@@ -26,17 +27,16 @@ export async function getCurrentRate(): Promise<number> {
   });
   if (recent) return Number(recent.rate);
 
-  const today = formatDate(new Date());
-  const tenDaysAgo = formatDate(new Date(Date.now() - 10 * 24 * 60 * 60 * 1000));
-  const rates = await fetchRatesFromBoi(tenDaysAgo, today);
-
-  if (rates.length > 0) {
-    for (const { date, rate } of rates) {
-      await prisma.exchangeRate
-        .upsert({ where: { date }, create: { date, rate }, update: { rate } })
-        .catch(() => {});
-    }
-    return rates[rates.length - 1].rate;
+  const current = await fetchCurrentRateFromBoi();
+  if (current) {
+    await prisma.exchangeRate
+      .upsert({
+        where: { date: current.date },
+        create: { date: current.date, rate: current.rate },
+        update: { rate: current.rate },
+      })
+      .catch(() => {});
+    return current.rate;
   }
 
   // Last resort: any historical rate, even if older than a week
@@ -44,6 +44,30 @@ export async function getCurrentRate(): Promise<number> {
   if (anyRate) return Number(anyRate.rate);
 
   throw new Error('No exchange rate data available');
+}
+
+/**
+ * Fetch the latest published USD/ILS rate from BOI's PublicApi.
+ * Returns null on failure. Date is normalized to UTC midnight.
+ */
+async function fetchCurrentRateFromBoi(): Promise<{ date: Date; rate: number } | null> {
+  try {
+    const response = await fetch(BOI_PUBLIC_API_CURRENT, {
+      headers: { Accept: 'application/json' },
+    });
+    if (!response.ok) {
+      console.error(`[exchange-rate] BOI PublicApi returned ${response.status}`);
+      return null;
+    }
+    const data = (await response.json()) as { currentExchangeRate?: number; lastUpdate?: string };
+    if (typeof data.currentExchangeRate !== 'number' || !data.lastUpdate) return null;
+    const date = new Date(data.lastUpdate.slice(0, 10));
+    if (isNaN(date.getTime())) return null;
+    return { date, rate: data.currentExchangeRate };
+  } catch (err) {
+    console.error('[exchange-rate] Failed to fetch from BOI PublicApi:', err);
+    return null;
+  }
 }
 
 /**
@@ -110,7 +134,7 @@ async function fetchRatesFromBoi(
   startDate: string,
   endDate: string
 ): Promise<Array<{ date: Date; rate: number }>> {
-  const url = `${BOI_API_BASE}/?startperiod=${startDate}&endperiod=${endDate}&format=sdmx-json`;
+  const url = `${BOI_SDMX_BASE}/?startperiod=${startDate}&endperiod=${endDate}&format=sdmx-json`;
 
   try {
     const response = await fetch(url);
