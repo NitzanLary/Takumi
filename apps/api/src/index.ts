@@ -11,6 +11,7 @@ import analyticsRouter from "./routes/analytics.js";
 import marketRouter from "./routes/market.js";
 import exchangeRatesRouter from "./routes/exchange-rates.js";
 import snapshotsRouter from "./routes/snapshots.js";
+import stockRouter from "./routes/stock.js";
 import chatRouter from "./routes/chat.js";
 import { registerTools } from "./ai/chat-handler.js";
 import { allToolSchemas, executeTool } from "./ai/tools/index.js";
@@ -47,6 +48,7 @@ app.use("/api/analytics", analyticsRouter);
 app.use("/api/market", marketRouter);
 app.use("/api/exchange-rates", exchangeRatesRouter);
 app.use("/api/snapshots", snapshotsRouter);
+app.use("/api/stock", stockRouter);
 app.use("/api/chat", chatRouter);
 
 // Error handler

@@ -28,15 +28,15 @@ takumi/
 ├── apps/
 │   ├── web/                  # Next.js 14, App Router, Tailwind, TanStack Query
 │   │   └── src/
-│   │       ├── app/          # Pages: dashboard, positions, history, analytics, import, alerts, settings
-│   │       ├── components/   # Providers.tsx, layout/Sidebar.tsx, layout/TopBar.tsx, ai/ChatDrawer.tsx, ai/MessageBubble.tsx, ai/ChatInput.tsx, ai/QuickActions.tsx
+│   │       ├── app/          # Pages: dashboard, positions, positions/[ticker], history, analytics, import, alerts, settings
+│   │       ├── components/   # Providers.tsx, layout/Sidebar.tsx, layout/TopBar.tsx, ai/ChatDrawer.tsx, ai/MessageBubble.tsx, ai/ChatInput.tsx, ai/QuickActions.tsx, stock/StockHeader.tsx, stock/OverviewTab.tsx, stock/TradesTab.tsx, stock/RoundTripsTab.tsx, stock/DividendsFeesTab.tsx, stock/StockChart.tsx
 │   │       ├── stores/       # chat-store.ts (Zustand store for AI chat state)
 │   │       └── lib/          # api-client.ts, formatters.ts, sse-client.ts
 │   └── api/                  # Express 5, TypeScript, Prisma
 │       └── src/
 │           ├── index.ts      # App entry — registers routes
-│           ├── routes/       # trades.ts, sync.ts, positions.ts, analytics.ts, market.ts, exchange-rates.ts, snapshots.ts, chat.ts
-│           ├── services/     # trade.service.ts, sync.service.ts, xlsx-import.service.ts, pnl.service.ts, position.service.ts, analytics.service.ts, market.service.ts, themarker.service.ts, stooq.service.ts, exchange-rate.service.ts, snapshot.service.ts, risk.service.ts, whatif.service.ts
+│           ├── routes/       # trades.ts, sync.ts, positions.ts, analytics.ts, market.ts, exchange-rates.ts, snapshots.ts, stock.ts, chat.ts
+│           ├── services/     # trade.service.ts, sync.service.ts, xlsx-import.service.ts, pnl.service.ts, position.service.ts, analytics.service.ts, market.service.ts, themarker.service.ts, stooq.service.ts, exchange-rate.service.ts, snapshot.service.ts, risk.service.ts, whatif.service.ts, stock-detail.service.ts
 │           ├── data/         # tase-ticker-map.json, sector-map.json
 │           ├── middleware/    # error-handler.ts
 │           ├── lib/          # config.ts, db.ts
@@ -45,7 +45,7 @@ takumi/
 │   ├── db/                   # Prisma schema + client (shared via @takumi/db)
 │   │   └── prisma/schema.prisma
 │   └── types/                # Shared TypeScript interfaces (shared via @takumi/types)
-│       └── src/              # trade.ts, sync.ts, position.ts, alert.ts, analytics.ts, api.ts, market.ts
+│       └── src/              # trade.ts, sync.ts, position.ts, alert.ts, analytics.ts, api.ts, market.ts, stock.ts
 ├── scripts/
 │   ├── dev.sh                # Start API + frontend
 │   └── seed.ts               # Populate DB with 12 sample trades
@@ -114,7 +114,7 @@ All monetary fields use `Decimal` (not Float).
 | POST | `/api/sync/import` | sync.ts | Upload XLSX file (multipart) for import via `xlsx-import.service.ts` |
 | GET | `/api/positions` | positions.ts | Open positions from FIFO lot matching, enriched with live market prices. Auto-triggers daily snapshot. |
 | GET | `/api/analytics/summary` | analytics.ts | Portfolio KPIs, behavioral stats, win/loss analysis |
-| GET | `/api/analytics/pnl` | analytics.ts | P&L breakdown by ticker, month, or market (groupBy param) |
+| GET | `/api/analytics/pnl` | analytics.ts | P&L breakdown by ticker, month, or market (groupBy param). `groupBy=market` accepts optional `window=all|ytd|12m` (default `all`) and includes `realizedPnlIls` (ILS-normalized realized P&L via current BOI USD/ILS rate) on each row. |
 | GET | `/api/analytics/risk` | analytics.ts | Portfolio risk metrics (Herfindahl, max drawdown, Sharpe, Sortino) |
 | GET | `/api/market/prices` | market.ts | Get cached/fresh prices for specified tickers (?tickers=X,Y) |
 | POST | `/api/market/refresh` | market.ts | Force-refresh all open position tickers from Yahoo Finance |
@@ -125,6 +125,10 @@ All monetary fields use `Decimal` (not Float).
 | POST | `/api/exchange-rates/backfill` | exchange-rates.ts | Backfill exchange rates from earliest trade date |
 | GET | `/api/snapshots` | snapshots.ts | Portfolio snapshots for equity curve (?from=&to=) |
 | POST | `/api/snapshots/capture` | snapshots.ts | Manually trigger today's portfolio snapshot |
+| GET | `/api/stock/:ticker/summary` | stock.ts | Per-stock detail page header + KPIs (position, realized P&L, fees, dividends, currency impact). Works for open AND closed positions. |
+| GET | `/api/stock/:ticker/open-lots` | stock.ts | Unsold FIFO buy lots for a ticker, each enriched with current price and per-lot unrealized P&L |
+| GET | `/api/stock/:ticker/round-trips` | stock.ts | Completed FIFO-matched buy→sell cycles (entry/exit/holding/realized P&L) |
+| GET | `/api/stock/:ticker/chart` | stock.ts | Daily-close price history from first buy → today (?from=&to= to override). Returns `{ available: false, reason, message }` for unmapped TASE funds. |
 | POST | `/api/chat` | chat.ts | Send message to AI agent, receive SSE stream response |
 | GET | `/api/chat/conversations` | chat.ts | List all AI conversations |
 | GET | `/api/chat/conversations/:id` | chat.ts | Get conversation with full message history |
@@ -134,10 +138,11 @@ All monetary fields use `Decimal` (not Float).
 
 | Route | Status | Description |
 |---|---|---|
-| `/dashboard` | **Functional** | Unrealized-focused: 4 KPI cards (unrealized P&L / market value / cost basis per currency + open position count), per-market unrealized P&L cards (TASE in ILS with USD conversion, US in USD with ILS conversion, via `/api/exchange-rates`), equity curve chart (Recharts, from portfolio snapshots). Realized P&L summary lives on the analytics page. |
-| `/positions` | **Functional** | Open positions table with live market prices (Yahoo Finance), day change %, unrealized P&L, weight %. Refresh Prices button. Auto-refetch every 60s. Shows placeholder warning for unmapped TASE tickers. |
-| `/history` | **Functional** | Full trade table with filters (ticker/market/direction), pagination, "Show all transactions" toggle for non-trade types |
-| `/analytics` | **Functional** | Realized P&L summary (per-currency P&L, total/closed trade counts, avg return, avg holding period), behavioral stats (8 cards), TASE vs US comparison, per-ticker P&L breakdown table, monthly P&L heatmap (color-coded grid), risk metrics cards (HHI, drawdown, Sharpe, Sortino) |
+| `/dashboard` | **Functional** | Single pane of glass for portfolio state and performance. **Portfolio Total** card (ILS home currency) showing Market Value, Unrealized P&L, Realized P&L, and Total P&L with USD equivalent under each. **Per-market cards** (TASE, US) showing the same four rows in native currency with cross-currency equivalent. **Realized-window toggle** (All-time / YTD / 12M, persisted in URL `?window=`) affects only Realized P&L and Total P&L. Equity curve (Recharts, from portfolio snapshots). Components live in `apps/web/src/components/dashboard/` (`MoneyLine`, `WindowToggle`, `PortfolioTotalCard`, `MarketCard`). |
+| `/positions` | **Functional** | Open positions table with live market prices (Yahoo Finance), day change %, unrealized P&L, weight %. Refresh Prices button. Auto-refetch every 60s. Shows placeholder warning for unmapped TASE tickers. Ticker cells link to `/positions/:ticker`. |
+| `/positions/:ticker` | **Functional** | Per-stock detail page. Header (shares, avg cost, current price, day change, market value, unrealized P&L, weight, sector, first buy date, holding duration). Tabs: Overview (KPI cards + open FIFO lots), Trades (raw BUY/SELL list), Round-trips (completed buy→sell cycles with holding and return), Dividends & Fees (dividend payments with withheld tax + per-trade commissions). Price chart docked at bottom with green/red buy/sell markers and dashed avg-cost line. Works for open AND closed positions. Also reachable from `/history` and `/analytics` ticker cells. Components in `apps/web/src/components/stock/`. |
+| `/history` | **Functional** | Full trade table with filters (ticker/market/direction), pagination, "Show all transactions" toggle for non-trade types. Ticker cells link to `/positions/:ticker`. |
+| `/analytics` | **Functional** | Realized P&L summary (per-currency P&L, total/closed trade counts, avg return, avg holding period), behavioral stats (8 cards), TASE vs US comparison, per-ticker P&L breakdown table (ticker cells link to `/positions/:ticker`), monthly P&L heatmap (color-coded grid), risk metrics cards (HHI, drawdown, Sharpe, Sortino) |
 | `/import` | **Functional** | XLSX drag-and-drop import with file tracking, import status, import history table |
 | `/alerts` | Stub | Empty page |
 | `/settings` | Stub | Empty page |
@@ -171,6 +176,8 @@ All monetary fields use `Decimal` (not Float).
 - **Responsive layout** — Mobile-first. Sidebar is a fixed 240px column on ≥md and collapses to an off-canvas drawer on <md (hamburger in TopBar, state in `ui-store.ts`). ChatDrawer is full-width on <md, 400px on ≥md. Tables wrap in `overflow-x-auto` containers. Grid layouts use `grid-cols-{1|2} … lg:grid-cols-4` pattern. Main padding is `p-3 sm:p-6`. Viewport meta set via `viewport` export in `apps/web/src/app/layout.tsx`.
 - **AI tool architecture** — Tools defined in `apps/api/src/ai/tools/` grouped by tier. Each file exports schemas (Anthropic format) + executor map. Registry in `tools/index.ts` combines all. Chat handler in `ai/chat-handler.ts` runs the agentic loop (stream → detect tool_use → execute → stream again).
 - **FIFO caching** — `runFifoMatching()` results cached in-memory with 1-minute TTL to avoid redundant re-computation when multiple AI tools call it within the same chat turn.
+- **Stock detail page** — `/positions/:ticker` is backed by `stock-detail.service.ts` + `routes/stock.ts` and composes existing services (trade, pnl, position, market, exchange-rate). `StockSummary` aggregates per-currency realized P&L, commissions paid, and dividends (with tax withheld). The service does NOT run its own SQL queries for P&L/lots — it filters the cached `runFifoMatching()` output via `getMatchedLotsForTicker()` / `getOpenLotsForTicker()`. Currency impact (USD tickers only) decomposes unrealized P&L into "price move" vs "FX move" per open FIFO lot using historical BOI rates from `getRate(buyDate)`. The small interaction term is folded into price-move so the two components sum to the total unrealized ILS P&L cleanly. URL uses `encodeURIComponent(ticker)` everywhere — TASE paper numbers like `1081820` are fine as URL segments.
+- **Historical price chart** — `market.service.getHistoricalPrices(ticker, market, from, to)` returns daily closes via `yahoo-finance2.chart()` (primary) with `stooq.service.fetchStooqHistorical()` as the US fallback. Unmapped TASE tickers (TheMarker-only) return `{ available: false, reason: 'unmapped_tase' }` — TheMarker exposes only current quote, no history. Results cached in-memory for 24h keyed by `ticker|from|to`. `StockChart.tsx` renders a Recharts `LineChart` with `<ReferenceDot>` per BUY (green) / SELL (red) executed-price marker and a dashed `<ReferenceLine>` at the current avg cost (only when position is open). Buy/sell dates that fall on market holidays snap to the nearest prior data point so markers still render on the X axis (category scale). No new `price_history` DB table — persistent OHLCV storage is deferred to Phase 5.
 
 ## Implementation Status
 

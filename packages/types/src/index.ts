@@ -5,3 +5,4 @@ export * from "./alert";
 export * from "./sync";
 export * from "./api";
 export * from "./market";
+export * from "./stock";

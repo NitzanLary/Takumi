@@ -9,6 +9,16 @@ export interface PnlBreakdown {
   currency: string;
 }
 
+export type PnlWindow = 'all' | 'ytd' | '12m';
+
+export interface MarketPnlBreakdown {
+  market: string;
+  realizedPnl: number;
+  realizedPnlIls: number;
+  tradeCount: number;
+  winRate: number;
+}
+
 export interface BehavioralReport {
   overallWinRate: number;
   avgWinningHoldDays: number;

@@ -1,9 +1,11 @@
 "use client";
 
+import { useMemo, useCallback, Suspense } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { apiFetch } from "@/lib/api-client";
-import { formatCurrency, formatNumber } from "@/lib/formatters";
-import type { SyncState } from "@takumi/types";
+import { formatNumber } from "@/lib/formatters";
+import type { PnlWindow, SyncState } from "@takumi/types";
 import {
   LineChart,
   Line,
@@ -13,17 +15,23 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { WindowToggle } from "@/components/dashboard/WindowToggle";
+import { PortfolioTotalCard } from "@/components/dashboard/PortfolioTotalCard";
+import {
+  MarketCard,
+  type MarketRegion,
+} from "@/components/dashboard/MarketCard";
 
 type Currency = "ILS" | "USD";
-type MarketRegion = "TASE" | "US";
 
 interface OpenPosition {
   ticker: string;
   market: string;
   currency: Currency;
-  totalCost: number;
   marketValue: number;
+  marketValueIls: number;
   unrealizedPnl: number;
+  unrealizedPnlIls: number;
   priceSource: "live" | "cached" | "placeholder";
 }
 
@@ -42,28 +50,53 @@ interface ExchangeRate {
   rate: number | null;
 }
 
-interface MarketBucket {
-  region: MarketRegion;
-  currency: Currency;
-  marketValue: number;
-  totalCost: number;
-  unrealizedPnl: number;
-  positionCount: number;
+interface MarketPnlRow {
+  market: string;
+  realizedPnl: number;
+  realizedPnlIls: number;
+  tradeCount: number;
+  winRate: number;
 }
 
-interface CurrencyBucket {
-  marketValue: number;
-  totalCost: number;
-  unrealizedPnl: number;
-  positionCount: number;
-}
+const WINDOWS: readonly PnlWindow[] = ["all", "ytd", "12m"];
+const REGIONS: readonly MarketRegion[] = ["TASE", "US"];
 
 function regionFor(market: string): MarketRegion {
   return market === "TASE" ? "TASE" : "US";
 }
 
+function parseWindow(raw: string | null): PnlWindow {
+  return raw && (WINDOWS as readonly string[]).includes(raw)
+    ? (raw as PnlWindow)
+    : "all";
+}
+
 export default function DashboardPage() {
+  return (
+    <Suspense fallback={<div className="p-2 text-sm text-gray-400">Loading…</div>}>
+      <DashboardInner />
+    </Suspense>
+  );
+}
+
+function DashboardInner() {
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
   const queryClient = useQueryClient();
+
+  const pnlWindow: PnlWindow = parseWindow(searchParams.get("window"));
+
+  const setWindow = useCallback(
+    (next: PnlWindow) => {
+      const params = new URLSearchParams(searchParams.toString());
+      if (next === "all") params.delete("window");
+      else params.set("window", next);
+      const qs = params.toString();
+      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    },
+    [searchParams, router, pathname]
+  );
 
   const { data: syncStatus } = useQuery({
     queryKey: ["sync-status"],
@@ -75,6 +108,14 @@ export default function DashboardPage() {
     queryKey: ["positions"],
     queryFn: () => apiFetch<OpenPosition[]>("/api/positions"),
     refetchInterval: 60_000,
+  });
+
+  const { data: pnlByMarket, isLoading: pnlLoading } = useQuery({
+    queryKey: ["pnl-by-market", pnlWindow],
+    queryFn: () =>
+      apiFetch<MarketPnlRow[]>(
+        `/api/analytics/pnl?groupBy=market&window=${pnlWindow}`
+      ),
   });
 
   const { data: snapshots } = useQuery({
@@ -92,60 +133,18 @@ export default function DashboardPage() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["snapshots"] }),
   });
 
-  const rate = fx?.rate ?? null; // ILS per USD
+  const rate = fx?.rate ?? null;
+  const loading = positionsLoading || pnlLoading;
 
-  const convert = (value: number, from: Currency, to: Currency): number | null => {
-    if (from === to) return value;
-    if (!rate || rate <= 0) return null;
-    if (from === "USD" && to === "ILS") return value * rate;
-    if (from === "ILS" && to === "USD") return value / rate;
-    return null;
-  };
-
-  // Aggregate per market region and per currency
-  const byRegion = new Map<MarketRegion, MarketBucket>();
-  const byCurrency: Record<Currency, CurrencyBucket> = {
-    ILS: { marketValue: 0, totalCost: 0, unrealizedPnl: 0, positionCount: 0 },
-    USD: { marketValue: 0, totalCost: 0, unrealizedPnl: 0, positionCount: 0 },
-  };
-
-  for (const p of positions ?? []) {
-    const region = regionFor(p.market);
-    const bucket = byRegion.get(region) ?? {
-      region,
-      currency: p.currency,
-      marketValue: 0,
-      totalCost: 0,
-      unrealizedPnl: 0,
-      positionCount: 0,
-    };
-    bucket.marketValue += p.marketValue;
-    bucket.totalCost += p.totalCost;
-    bucket.unrealizedPnl += p.unrealizedPnl;
-    bucket.positionCount += 1;
-    byRegion.set(region, bucket);
-
-    byCurrency[p.currency].marketValue += p.marketValue;
-    byCurrency[p.currency].totalCost += p.totalCost;
-    byCurrency[p.currency].unrealizedPnl += p.unrealizedPnl;
-    byCurrency[p.currency].positionCount += 1;
-  }
-
-  const currencies: Currency[] = (["ILS", "USD"] as const).filter(
-    (c) => byCurrency[c].positionCount > 0
+  const { perMarket, aggregate, hasPlaceholders } = useMemo(
+    () => aggregateDashboard(positions ?? [], pnlByMarket ?? []),
+    [positions, pnlByMarket]
   );
-
-  const totalPositions = positions?.length ?? 0;
-  const hasPlaceholders = positions?.some((p) => p.priceSource === "placeholder");
-
-  const regionOrder: MarketRegion[] = ["TASE", "US"];
-  const regionCards = regionOrder
-    .map((r) => byRegion.get(r))
-    .filter((b): b is MarketBucket => Boolean(b));
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      {/* Header */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="text-2xl font-bold text-gray-900">Dashboard</h2>
           {syncStatus?.lastSyncAt && (
@@ -162,131 +161,45 @@ export default function DashboardPage() {
               )}
             </p>
           )}
+          {rate !== null && fx?.date && (
+            <p className="mt-0.5 text-xs text-gray-400">
+              USD/ILS {rate.toFixed(3)} · {new Date(fx.date).toLocaleDateString()}
+            </p>
+          )}
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          <WindowToggle value={pnlWindow} onChange={setWindow} />
+          <p className="text-xs text-gray-400">
+            Window applies to Realized &amp; Total P&amp;L only.
+          </p>
         </div>
       </div>
 
       {hasPlaceholders && (
         <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-700">
-          Some TASE positions show placeholder prices. Unrealized P&L for those holdings reflects cost basis until live prices become available.
+          Some TASE positions show placeholder prices. Unrealized P&amp;L for those holdings reflects cost basis until live prices become available.
         </div>
       )}
 
-      {/* KPI Cards — unrealized focus */}
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiMultiCurrencyCard
-          label="Total Unrealized P&L"
-          loading={positionsLoading}
-          currencies={currencies}
-          values={Object.fromEntries(
-            currencies.map((c) => [c, byCurrency[c].unrealizedPnl])
-          ) as Record<Currency, number>}
-          signedColor
-        />
-        <KpiMultiCurrencyCard
-          label="Total Market Value"
-          loading={positionsLoading}
-          currencies={currencies}
-          values={Object.fromEntries(
-            currencies.map((c) => [c, byCurrency[c].marketValue])
-          ) as Record<Currency, number>}
-        />
-        <KpiMultiCurrencyCard
-          label="Total Cost Basis"
-          loading={positionsLoading}
-          currencies={currencies}
-          values={Object.fromEntries(
-            currencies.map((c) => [c, byCurrency[c].totalCost])
-          ) as Record<Currency, number>}
-        />
-        <div className="rounded-xl border border-gray-200 bg-white p-5">
-          <p className="text-sm text-gray-500">Open Positions</p>
-          {positionsLoading ? (
-            <span className="mt-1 inline-block h-7 w-16 animate-pulse rounded bg-gray-100" />
-          ) : (
-            <p className="mt-1 text-2xl font-semibold text-gray-900">
-              {totalPositions}
-            </p>
-          )}
-        </div>
-      </div>
+      {/* Aggregate */}
+      <PortfolioTotalCard
+        totals={aggregate}
+        fxRate={rate}
+        loading={loading}
+      />
 
-      {/* Unrealized P&L by Market */}
-      <div className="rounded-xl border border-gray-200 bg-white p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-lg font-semibold">Unrealized P&L by Market</h3>
-          {rate && (
-            <p className="text-xs text-gray-400">
-              FX: 1 USD = {rate.toFixed(3)} ILS
-            </p>
-          )}
-        </div>
-        {regionCards.length === 0 ? (
-          <div className="flex h-28 items-center justify-center text-gray-400">
-            No open positions.
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            {regionCards.map((bucket) => {
-              const nativeCurrency = bucket.currency;
-              const otherCurrency: Currency =
-                nativeCurrency === "ILS" ? "USD" : "ILS";
-              const convertedPnl = convert(
-                bucket.unrealizedPnl,
-                nativeCurrency,
-                otherCurrency
-              );
-              const pnlPct =
-                bucket.totalCost > 0
-                  ? (bucket.unrealizedPnl / bucket.totalCost) * 100
-                  : 0;
-              const positive = bucket.unrealizedPnl >= 0;
-              return (
-                <div
-                  key={bucket.region}
-                  className="rounded-lg border border-gray-100 bg-gray-50 p-4"
-                >
-                  <div className="flex items-baseline justify-between">
-                    <p className="text-sm font-medium text-gray-600">
-                      {bucket.region === "TASE"
-                        ? "TASE (Israeli)"
-                        : "US (NYSE/NASDAQ)"}
-                    </p>
-                    <span className="text-xs text-gray-400">
-                      {bucket.positionCount} position
-                      {bucket.positionCount === 1 ? "" : "s"}
-                    </span>
-                  </div>
-                  <p
-                    className={`mt-1 text-2xl font-bold ${
-                      positive ? "text-green-600" : "text-red-600"
-                    }`}
-                  >
-                    {formatCurrency(bucket.unrealizedPnl, nativeCurrency)}
-                  </p>
-                  <p
-                    className={`text-sm ${
-                      positive ? "text-green-600" : "text-red-600"
-                    }`}
-                  >
-                    {convertedPnl !== null
-                      ? formatCurrency(convertedPnl, otherCurrency)
-                      : `— ${otherCurrency} (no FX rate)`}
-                  </p>
-                  <div className="mt-2 flex gap-4 text-xs text-gray-500">
-                    <span>
-                      Market value:{" "}
-                      {formatCurrency(bucket.marketValue, nativeCurrency)}
-                    </span>
-                    <span>
-                      {positive ? "+" : ""}
-                      {pnlPct.toFixed(2)}%
-                    </span>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
+      {/* Per-market */}
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        {REGIONS.map((region) => (
+          <MarketCard
+            key={region}
+            region={region}
+            positionCount={perMarket[region].positionCount}
+            totals={perMarket[region]}
+            fxRate={rate}
+            loading={loading}
+          />
+        ))}
       </div>
 
       {/* Equity Curve */}
@@ -306,7 +219,7 @@ export default function DashboardPage() {
             <p className="text-center">
               {snapshots?.length === 1
                 ? "One snapshot captured. Need at least 2 data points for the chart."
-                : "No snapshots yet. Click \"Capture Snapshot\" to start tracking your portfolio value over time."}
+                : 'No snapshots yet. Click "Capture Snapshot" to start tracking your portfolio value over time.'}
             </p>
           </div>
         ) : (
@@ -328,11 +241,7 @@ export default function DashboardPage() {
                 }))}
               >
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis
-                  dataKey="date"
-                  tick={{ fontSize: 12 }}
-                  stroke="#9ca3af"
-                />
+                <XAxis dataKey="date" tick={{ fontSize: 12 }} stroke="#9ca3af" />
                 <YAxis
                   tick={{ fontSize: 12 }}
                   stroke="#9ca3af"
@@ -343,9 +252,10 @@ export default function DashboardPage() {
                     formatNumber(value),
                     name === "value" ? "Portfolio Value" : "Unrealized P&L",
                   ]}
-                  labelFormatter={(_label: string, payload: Array<{ payload?: { fullDate?: string } }>) =>
-                    payload?.[0]?.payload?.fullDate ?? _label
-                  }
+                  labelFormatter={(
+                    _label: string,
+                    payload: Array<{ payload?: { fullDate?: string } }>
+                  ) => payload?.[0]?.payload?.fullDate ?? _label}
                 />
                 <Line
                   type="monotone"
@@ -364,43 +274,66 @@ export default function DashboardPage() {
   );
 }
 
-function KpiMultiCurrencyCard({
-  label,
-  loading,
-  currencies,
-  values,
-  signedColor = false,
-}: {
-  label: string;
-  loading: boolean;
-  currencies: Currency[];
-  values: Record<Currency, number>;
-  signedColor?: boolean;
-}) {
-  return (
-    <div className="rounded-xl border border-gray-200 bg-white p-5">
-      <p className="text-sm text-gray-500">{label}</p>
-      {loading ? (
-        <span className="mt-1 inline-block h-7 w-24 animate-pulse rounded bg-gray-100" />
-      ) : currencies.length === 0 ? (
-        <p className="mt-1 text-2xl font-semibold text-gray-900">—</p>
-      ) : (
-        <div className="mt-1 space-y-0.5">
-          {currencies.map((c) => {
-            const v = values[c];
-            const color = signedColor
-              ? v >= 0
-                ? "text-green-600"
-                : "text-red-600"
-              : "text-gray-900";
-            return (
-              <p key={c} className={`text-xl font-semibold ${color}`}>
-                {formatCurrency(v, c)}
-              </p>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
+interface MarketAgg {
+  marketValue: number;
+  unrealizedPnl: number;
+  realizedPnl: number;
+  totalPnl: number;
+  positionCount: number;
+}
+
+interface AggregateIls {
+  marketValueIls: number;
+  unrealizedPnlIls: number;
+  realizedPnlIls: number;
+  totalPnlIls: number;
+}
+
+function aggregateDashboard(
+  positions: OpenPosition[],
+  pnlByMarket: MarketPnlRow[]
+): {
+  perMarket: Record<MarketRegion, MarketAgg>;
+  aggregate: AggregateIls;
+  hasPlaceholders: boolean;
+} {
+  const perMarket: Record<MarketRegion, MarketAgg> = {
+    TASE: { marketValue: 0, unrealizedPnl: 0, realizedPnl: 0, totalPnl: 0, positionCount: 0 },
+    US: { marketValue: 0, unrealizedPnl: 0, realizedPnl: 0, totalPnl: 0, positionCount: 0 },
+  };
+
+  let marketValueIls = 0;
+  let unrealizedPnlIls = 0;
+  let hasPlaceholders = false;
+
+  for (const p of positions) {
+    const region = regionFor(p.market);
+    perMarket[region].marketValue += p.marketValue;
+    perMarket[region].unrealizedPnl += p.unrealizedPnl;
+    perMarket[region].positionCount += 1;
+    marketValueIls += p.marketValueIls;
+    unrealizedPnlIls += p.unrealizedPnlIls;
+    if (p.priceSource === "placeholder") hasPlaceholders = true;
+  }
+
+  let realizedPnlIls = 0;
+  for (const row of pnlByMarket) {
+    const region: MarketRegion = row.market === "TASE" ? "TASE" : "US";
+    perMarket[region].realizedPnl += row.realizedPnl;
+    realizedPnlIls += row.realizedPnlIls;
+  }
+
+  for (const region of REGIONS) {
+    perMarket[region].totalPnl =
+      perMarket[region].unrealizedPnl + perMarket[region].realizedPnl;
+  }
+
+  const aggregate: AggregateIls = {
+    marketValueIls,
+    unrealizedPnlIls,
+    realizedPnlIls,
+    totalPnlIls: unrealizedPnlIls + realizedPnlIls,
+  };
+
+  return { perMarket, aggregate, hasPlaceholders };
 }

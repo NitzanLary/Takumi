@@ -120,3 +120,12 @@ export async function getOpenPositions(): Promise<OpenPosition[]> {
 
   return positions.sort((a, b) => b.marketValueIls - a.marketValueIls);
 }
+
+/**
+ * Return the unsold FIFO buy lots for a single ticker.
+ * Empty array if the ticker is fully closed (or never held).
+ */
+export async function getOpenLotsForTicker(ticker: string): Promise<OpenLot[]> {
+  const { openLots } = await runFifoMatching();
+  return openLots.filter((lot) => lot.ticker === ticker);
+}

@@ -13,7 +13,7 @@ import { fileURLToPath } from 'url';
 import path from 'path';
 import type { MarketQuote, Currency } from '@takumi/types';
 import { fetchTheMarkerQuote } from './themarker.service.js';
-import { fetchStooqQuote, resolveStooqSymbol } from './stooq.service.js';
+import { fetchStooqQuote, fetchStooqHistorical, resolveStooqSymbol } from './stooq.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -360,6 +360,87 @@ export async function getUnmappedTickers(): Promise<Array<{ ticker: string; secu
   return taseTickers
     .filter((s) => !taseTickerMap[s.ticker])
     .map((s) => ({ ticker: s.ticker, securityName: s.name }));
+}
+
+export interface HistoricalPricePoint {
+  date: string;
+  close: number;
+}
+
+export type HistoricalPriceResult =
+  | { available: true; source: 'yahoo' | 'stooq'; points: HistoricalPricePoint[] }
+  | { available: false; reason: 'unmapped_tase' | 'fetch_failed' };
+
+// In-memory cache for historical price series (1-day TTL). Keyed by
+// ticker|from|to so varied date ranges are cached independently.
+const HISTORICAL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const historicalCache = new Map<string, { at: number; result: HistoricalPriceResult }>();
+
+/**
+ * Fetch daily historical closes for a ticker between two dates (inclusive).
+ * Yahoo is the primary source (works for US tickers and mapped TASE `.TA` symbols).
+ * Stooq is the fallback for US tickers when Yahoo fails (matches the quote path).
+ * Unmapped TASE tickers (e.g., Israeli mutual funds via TheMarker) have no
+ * historical data source and return `{ available: false, reason: 'unmapped_tase' }`.
+ */
+export async function getHistoricalPrices(
+  ticker: string,
+  market: string,
+  from: Date,
+  to: Date
+): Promise<HistoricalPriceResult> {
+  const cacheKey = `${ticker}|${from.toISOString().slice(0, 10)}|${to.toISOString().slice(0, 10)}`;
+  const cached = historicalCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < HISTORICAL_CACHE_TTL_MS) {
+    return cached.result;
+  }
+
+  const yahooSymbol = resolveYahooSymbol(ticker, market);
+
+  // Unmapped TASE — no historical source available (TheMarker is quote-only).
+  if (market === 'TASE' && !yahooSymbol) {
+    const result: HistoricalPriceResult = { available: false, reason: 'unmapped_tase' };
+    historicalCache.set(cacheKey, { at: Date.now(), result });
+    return result;
+  }
+
+  if (yahooSymbol) {
+    try {
+      const chart = await yahooFinance.chart(yahooSymbol, {
+        period1: from,
+        period2: to,
+        interval: '1d',
+      });
+      const points: HistoricalPricePoint[] = [];
+      for (const q of chart.quotes) {
+        if (q.close == null || !q.date) continue;
+        points.push({ date: q.date.toISOString().slice(0, 10), close: q.close });
+      }
+      if (points.length > 0) {
+        const result: HistoricalPriceResult = { available: true, source: 'yahoo', points };
+        historicalCache.set(cacheKey, { at: Date.now(), result });
+        return result;
+      }
+      console.warn(`[market] Yahoo returned no historical quotes for ${yahooSymbol}`);
+    } catch (err) {
+      console.warn(`[market] Yahoo historical fetch failed for ${yahooSymbol}:`, err);
+    }
+  }
+
+  // Stooq fallback — US only
+  const stooqSymbol = resolveStooqSymbol(ticker, market);
+  if (stooqSymbol) {
+    const points = await fetchStooqHistorical(stooqSymbol, from, to);
+    if (points.length > 0) {
+      const result: HistoricalPriceResult = { available: true, source: 'stooq', points };
+      historicalCache.set(cacheKey, { at: Date.now(), result });
+      return result;
+    }
+  }
+
+  const result: HistoricalPriceResult = { available: false, reason: 'fetch_failed' };
+  historicalCache.set(cacheKey, { at: Date.now(), result });
+  return result;
 }
 
 /**

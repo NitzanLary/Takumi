@@ -96,3 +96,53 @@ export async function fetchStooqQuote(
     fetchedAt: new Date().toISOString(),
   };
 }
+
+/**
+ * Fetch daily historical closes from Stooq for a US ticker.
+ * Endpoint: https://stooq.com/q/d/l/?s=<sym>&i=d&d1=YYYYMMDD&d2=YYYYMMDD (CSV download)
+ * CSV header: Date,Open,High,Low,Close,Volume
+ * Returns [] on any failure.
+ */
+export async function fetchStooqHistorical(
+  stooqSymbol: string,
+  from: Date,
+  to: Date
+): Promise<Array<{ date: string; close: number }>> {
+  const fmt = (d: Date) =>
+    `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
+  const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(stooqSymbol)}&d1=${fmt(from)}&d2=${fmt(to)}&i=d`;
+  let csv: string;
+  try {
+    const res = await fetch(url, {
+      headers: { 'User-Agent': USER_AGENT, Accept: 'text/csv' },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!res.ok) {
+      console.warn(`[stooq] historical HTTP ${res.status} for ${stooqSymbol}`);
+      return [];
+    }
+    csv = await res.text();
+  } catch (err) {
+    console.warn(`[stooq] historical fetch failed for ${stooqSymbol}:`, err);
+    return [];
+  }
+
+  const lines = csv.trim().split('\n');
+  if (lines.length < 2) return [];
+  const header = lines[0].toLowerCase();
+  if (!header.includes('date') || !header.includes('close')) {
+    console.warn(`[stooq] unexpected historical CSV header for ${stooqSymbol}: ${header}`);
+    return [];
+  }
+
+  const points: Array<{ date: string; close: number }> = [];
+  for (let i = 1; i < lines.length; i++) {
+    const cols = lines[i].split(',');
+    if (cols.length < 5) continue;
+    const date = cols[0];
+    const close = Number(cols[4]);
+    if (!date || !Number.isFinite(close) || close <= 0) continue;
+    points.push({ date, close });
+  }
+  return points;
+}

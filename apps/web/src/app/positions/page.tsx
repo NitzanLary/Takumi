@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
 import { formatCurrency, formatPercent, formatNumber, isHebrew } from "@/lib/formatters";
@@ -147,8 +148,13 @@ export default function PositionsPage() {
             ) : (
               positions.map((pos) => (
                 <tr key={pos.ticker} className="hover:bg-gray-50">
-                  <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-gray-900">
-                    {pos.ticker}
+                  <td className="whitespace-nowrap px-4 py-3 text-sm font-medium">
+                    <Link
+                      href={`/positions/${encodeURIComponent(pos.ticker)}`}
+                      className="text-blue-600 hover:underline"
+                    >
+                      {pos.ticker}
+                    </Link>
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-600">
                     <span dir={isHebrew(pos.securityName) ? "rtl" : "ltr"}>

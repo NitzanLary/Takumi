@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
@@ -126,9 +127,13 @@ export default function HistoryPage() {
                     {formatDate(trade.tradeDate)}
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm font-medium">
-                    <span dir={isHebrew(trade.ticker) ? "rtl" : "ltr"}>
+                    <Link
+                      href={`/positions/${encodeURIComponent(trade.ticker)}`}
+                      className="text-blue-600 hover:underline"
+                      dir={isHebrew(trade.ticker) ? "rtl" : "ltr"}
+                    >
                       {trade.ticker}
-                    </span>
+                    </Link>
                   </td>
                   <td className="whitespace-nowrap px-4 py-3 text-sm">
                     <span

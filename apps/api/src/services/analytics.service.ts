@@ -5,7 +5,7 @@
  * DB queries needed — the P&L engine is the single source of truth.
  */
 
-import { CORE_DIRECTIONS } from '@takumi/types';
+import { CORE_DIRECTIONS, type PnlWindow } from '@takumi/types';
 import {
   runFifoMatching,
   getPortfolioSummary,
@@ -99,16 +99,20 @@ export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
 }
 
 /**
- * P&L breakdown by groupBy parameter.
+ * P&L breakdown by groupBy parameter. `window` currently only affects the
+ * 'market' grouping; ticker and month views return lifetime data.
  */
-export async function getPnlBreakdown(groupBy: 'ticker' | 'month' | 'market') {
+export async function getPnlBreakdown(
+  groupBy: 'ticker' | 'month' | 'market',
+  window: PnlWindow = 'all'
+) {
   switch (groupBy) {
     case 'ticker':
       return getPnlByTicker();
     case 'month':
       return getPnlByMonth();
     case 'market':
-      return getPnlByMarket();
+      return getPnlByMarket(window);
     default:
       return getPnlByTicker();
   }

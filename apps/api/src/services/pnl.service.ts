@@ -6,7 +6,9 @@
  * per ticker, and portfolio-wide. Also exposes unmatched buy lots for position derivation.
  */
 
+import type { PnlWindow } from '@takumi/types';
 import { prisma } from '../lib/db.js';
+import { getCurrentRate } from './exchange-rate.service.js';
 
 export interface MatchedLot {
   ticker: string;
@@ -202,6 +204,15 @@ export async function runFifoMatching(): Promise<{
 }
 
 /**
+ * Return the matched (closed) FIFO lots for a single ticker — one row per
+ * completed buy→sell cycle. Empty if the ticker has no closed round-trips.
+ */
+export async function getMatchedLotsForTicker(ticker: string): Promise<MatchedLot[]> {
+  const { matchedLots } = await runFifoMatching();
+  return matchedLots.filter((lot) => lot.ticker === ticker);
+}
+
+/**
  * Get realized P&L grouped by ticker.
  */
 export async function getPnlByTicker(): Promise<TickerPnl[]> {
@@ -270,32 +281,78 @@ export async function getPnlByMonth(): Promise<
 }
 
 /**
- * Get realized P&L grouped by market (TASE vs US).
+ * Resolve a PnlWindow to an inclusive date lower-bound. `null` = unbounded.
+ * Window applies to the sellDate (realization event).
  */
-export async function getPnlByMarket(): Promise<
-  { market: string; realizedPnl: number; tradeCount: number; winRate: number }[]
+function resolveWindowStart(window: PnlWindow): Date | null {
+  if (window === 'all') return null;
+  if (window === 'ytd') {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
+  }
+  if (window === '12m') {
+    const now = new Date();
+    return new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+  }
+  return null;
+}
+
+/**
+ * Get realized P&L grouped by market (TASE vs US).
+ * `window` filters closed lots by sellDate. `realizedPnlIls` is the ILS-normalized
+ * realized P&L using the current USD/ILS rate (TASE passes through 1:1).
+ */
+export async function getPnlByMarket(
+  window: PnlWindow = 'all'
+): Promise<
+  {
+    market: string;
+    realizedPnl: number;
+    realizedPnlIls: number;
+    tradeCount: number;
+    winRate: number;
+  }[]
 > {
   const { matchedLots } = await runFifoMatching();
 
+  const start = resolveWindowStart(window);
+  const filtered = start
+    ? matchedLots.filter((l) => l.sellDate.getTime() >= start.getTime())
+    : matchedLots;
+
+  let usdIlsRate = 1;
+  try {
+    usdIlsRate = await getCurrentRate();
+  } catch (err) {
+    console.warn('[pnl.service] getPnlByMarket: no FX rate available, USD→ILS conversion will pass through 1:1', err);
+  }
+
   const byMarket = new Map<
     string,
-    { pnl: number; count: number; wins: number }
+    { pnl: number; count: number; wins: number; currency: string }
   >();
-  for (const lot of matchedLots) {
+  for (const lot of filtered) {
     const marketGroup = lot.market === 'TASE' ? 'TASE' : 'US';
-    const existing = byMarket.get(marketGroup) || { pnl: 0, count: 0, wins: 0 };
+    const existing =
+      byMarket.get(marketGroup) ||
+      { pnl: 0, count: 0, wins: 0, currency: lot.currency };
     existing.pnl += lot.realizedPnl;
     existing.count += 1;
+    existing.currency = lot.currency;
     if (lot.realizedPnl > 0) existing.wins += 1;
     byMarket.set(marketGroup, existing);
   }
 
-  return Array.from(byMarket.entries()).map(([market, val]) => ({
-    market,
-    realizedPnl: val.pnl,
-    tradeCount: val.count,
-    winRate: val.count > 0 ? (val.wins / val.count) * 100 : 0,
-  }));
+  return Array.from(byMarket.entries()).map(([market, val]) => {
+    const fx = val.currency === 'USD' ? usdIlsRate : 1;
+    return {
+      market,
+      realizedPnl: val.pnl,
+      realizedPnlIls: val.pnl * fx,
+      tradeCount: val.count,
+      winRate: val.count > 0 ? (val.wins / val.count) * 100 : 0,
+    };
+  });
 }
 
 export interface CurrencyPnl {

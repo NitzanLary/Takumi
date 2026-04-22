@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
 import { formatCurrency, formatNumber, formatPercent, isHebrew } from "@/lib/formatters";
@@ -266,8 +267,13 @@ export default function AnalyticsPage() {
               ) : (
                 tickerPnl.map((t) => (
                   <tr key={t.ticker} className="hover:bg-gray-50">
-                    <td className="whitespace-nowrap px-4 py-3 text-sm font-medium text-gray-900">
-                      {t.ticker}
+                    <td className="whitespace-nowrap px-4 py-3 text-sm font-medium">
+                      <Link
+                        href={`/positions/${encodeURIComponent(t.ticker)}`}
+                        className="text-blue-600 hover:underline"
+                      >
+                        {t.ticker}
+                      </Link>
                     </td>
                     <td className="whitespace-nowrap px-4 py-3 text-sm text-gray-600">
                       <span dir={isHebrew(t.securityName) ? "rtl" : "ltr"}>
