@@ -8,30 +8,90 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// ─── Users & Auth ────────────────────────────────────────────────
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String    @map("password_hash")
+  emailVerifiedAt DateTime? @map("email_verified_at")
+  displayName     String?   @map("display_name")
+  currencyPref    String    @default("ILS") @map("currency_pref")
+  costBasisMethod String    @default("FIFO") @map("cost_basis_method")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  sessions           Session[]
+  verificationTokens VerificationToken[]
+  trades             Trade[]
+  alerts             Alert[]
+  conversations      AiConversation[]
+  snapshots          PortfolioSnapshot[]
+  syncLogs           SyncLog[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(cuid())
+  userId    String   @map("user_id")
+  tokenHash String   @unique @map("token_hash")
+  expiresAt DateTime @map("expires_at")
+  userAgent String?  @map("user_agent")
+  ipAddress String?  @map("ip_address")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model VerificationToken {
+  id         String    @id @default(cuid())
+  userId     String    @map("user_id")
+  tokenHash  String    @unique @map("token_hash")
+  purpose    String    // email_verify | password_reset
+  expiresAt  DateTime  @map("expires_at")
+  consumedAt DateTime? @map("consumed_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, purpose])
+  @@map("verification_tokens")
+}
+
 // ─── Trade Records ───────────────────────────────────────────────
 
 model Trade {
-  id            String   @id @default(cuid())
-  tradeId       String   @map("trade_id")
-  ticker        String
-  securityName  String   @map("security_name")
-  market        String   // TASE | NYSE | NASDAQ
-  direction     String   // BUY | SELL
-  quantity      Decimal
-  price         Decimal
-  currency      String   // ILS | USD
-  commission    Decimal  @default(0)
-  proceedsFx    Decimal? @map("proceeds_fx")       // Actual FX amount (תמורה במט"ח)
-  proceedsIls   Decimal? @map("proceeds_ils")      // Actual ILS amount (תמורה בשקלים)
+  id              String   @id @default(cuid())
+  userId          String?  @map("user_id")
+  tradeId         String   @map("trade_id")
+  ticker          String
+  securityName    String   @map("security_name")
+  market          String   // TASE | NYSE | NASDAQ
+  direction       String   // BUY | SELL
+  quantity        Decimal
+  price           Decimal
+  currency        String   // ILS | USD
+  commission      Decimal  @default(0)
+  proceedsFx      Decimal? @map("proceeds_fx")       // Actual FX amount (תמורה במט"ח)
+  proceedsIls     Decimal? @map("proceeds_ils")      // Actual ILS amount (תמורה בשקלים)
   capitalGainsTax Decimal? @map("capital_gains_tax") // Estimated capital gains tax
-  tradeDate     DateTime @map("trade_date")
-  source        String   // xlsx_import
-  rawPayload    String?  @map("raw_payload") // JSON string
-  notes         String?
-  createdAt     DateTime @default(now()) @map("created_at")
-  updatedAt     DateTime @updatedAt @map("updated_at")
+  tradeDate       DateTime @map("trade_date")
+  source          String   // xlsx_import
+  rawPayload      String?  @map("raw_payload") // JSON string
+  notes           String?
+  createdAt       DateTime @default(now()) @map("created_at")
+  updatedAt       DateTime @updatedAt @map("updated_at")
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([tradeId, source])
+  @@index([userId, tradeDate])
   @@index([ticker])
   @@index([tradeDate])
   @@index([market])
@@ -58,6 +118,7 @@ model Security {
 
 model SyncLog {
   id           Int      @id @default(autoincrement())
+  userId       String?  @map("user_id")
   syncedAt     DateTime @default(now()) @map("synced_at")
   status       String   // success | partial | failed
   recordsAdded Int      @default(0) @map("records_added")
@@ -66,7 +127,9 @@ model SyncLog {
   fileName     String?  @map("file_name")
   errorMessage String?  @map("error_message")
 
-  @@index([syncedAt(sort: Desc)])
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, syncedAt(sort: Desc)])
   @@map("sync_log")
 }
 
@@ -74,6 +137,7 @@ model SyncLog {
 
 model Alert {
   id          String    @id @default(cuid())
+  userId      String?   @map("user_id")
   ticker      String?
   type        String    // price_drop | price_target | holding_duration | portfolio_pnl | sync_failure | inactivity
   threshold   Decimal
@@ -83,6 +147,9 @@ model Alert {
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
   @@index([status])
   @@map("alerts")
 }
@@ -119,6 +186,7 @@ model ExchangeRate {
 
 model PortfolioSnapshot {
   id             String   @id @default(cuid())
+  userId         String?  @map("user_id")
   date           DateTime @unique
   totalValue     Decimal  @map("total_value")
   totalCostBasis Decimal  @map("total_cost_basis")
@@ -128,6 +196,9 @@ model PortfolioSnapshot {
   snapshotData   String?  @map("snapshot_data") // JSON string
   createdAt      DateTime @default(now()) @map("created_at")
 
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, date])
   @@map("portfolio_snapshots")
 }
 
@@ -135,11 +206,15 @@ model PortfolioSnapshot {
 
 model AiConversation {
   id        String      @id @default(cuid())
+  userId    String?     @map("user_id")
   title     String?
   createdAt DateTime    @default(now()) @map("created_at")
   updatedAt DateTime    @updatedAt @map("updated_at")
   messages  AiMessage[]
 
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, updatedAt])
   @@map("ai_conversations")
 }
 
@@ -156,7 +231,7 @@ model AiMessage {
   @@map("ai_messages")
 }
 
-// ─── User Preferences (single-row) ──────────────────────────────
+// ─── User Preferences (single-row, legacy — dropped in Commit B) ─
 
 model UserPreferences {
   id              String @id @default("default")

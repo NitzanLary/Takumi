@@ -7,12 +7,15 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "tsx src/index.ts",
+    "bootstrap-users": "tsx ../../scripts/bootstrap-users.ts",
     "test": "vitest run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52",
     "@takumi/db": "workspace:*",
     "@takumi/types": "workspace:*",
+    "bcryptjs": "^3.0.3",
+    "cookie": "^1.1.1",
     "cors": "^2",
     "dotenv": "^16",
     "express": "^5",
@@ -25,6 +28,8 @@
     "zod": "^3"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^3.0.0",
+    "@types/cookie": "^1.0.0",
     "@types/cors": "^2",
     "@types/express": "^5",
     "@types/multer": "^1",
