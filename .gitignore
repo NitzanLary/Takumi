@@ -50,3 +50,6 @@ coverage/
 # Personal trading data (do not commit) — top-level /data only
 IBI_transactions_*.xlsx
 /data/
+
+# Product requirements document
+Takumi_PRD.md
