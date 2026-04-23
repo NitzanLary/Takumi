@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useMemo } from "react";
 import Link from "next/link";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
@@ -26,18 +27,74 @@ interface OpenPosition {
   dayChangePct: number | null;
 }
 
+type SortKey =
+  | "ticker"
+  | "securityName"
+  | "market"
+  | "quantity"
+  | "avgCostBasis"
+  | "currentPrice"
+  | "marketValueIls"
+  | "unrealizedPnlIls"
+  | "weight";
+
+type SortDir = "asc" | "desc";
+
+const COLUMNS: { label: string; key: SortKey }[] = [
+  { label: "Ticker", key: "ticker" },
+  { label: "Name", key: "securityName" },
+  { label: "Market", key: "market" },
+  { label: "Qty", key: "quantity" },
+  { label: "Avg Cost", key: "avgCostBasis" },
+  { label: "Current Price", key: "currentPrice" },
+  { label: "Market Value", key: "marketValueIls" },
+  { label: "Unrealized P&L", key: "unrealizedPnlIls" },
+  { label: "Weight", key: "weight" },
+];
+
+function comparePositions(a: OpenPosition, b: OpenPosition, key: SortKey, dir: SortDir): number {
+  let cmp: number;
+  if (key === "securityName") {
+    cmp = a.securityName.localeCompare(b.securityName, undefined, { sensitivity: "base" });
+  } else if (key === "ticker" || key === "market") {
+    cmp = a[key].localeCompare(b[key]);
+  } else {
+    cmp = (a[key] as number) - (b[key] as number);
+  }
+  return dir === "asc" ? cmp : -cmp;
+}
+
 export default function PositionsPage() {
   const queryClient = useQueryClient();
+  const [sortKey, setSortKey] = useState<SortKey>("weight");
+  const [sortDir, setSortDir] = useState<SortDir>("desc");
+
   const { data: positions, isLoading } = useQuery({
     queryKey: ["positions"],
     queryFn: () => apiFetch<OpenPosition[]>("/api/positions"),
-    refetchInterval: 60_000, // auto-refresh every 60s
+    refetchInterval: 60_000,
   });
 
   const refreshMutation = useMutation({
     mutationFn: () => apiFetch("/api/market/refresh", { method: "POST" }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["positions"] }),
   });
+
+  // Sort state lives in useState, separate from query data, so background
+  // refetches don't reset the user's chosen sort order.
+  const sortedPositions = useMemo(() => {
+    if (!positions) return [];
+    return [...positions].sort((a, b) => comparePositions(a, b, sortKey, sortDir));
+  }, [positions, sortKey, sortDir]);
+
+  function handleSort(key: SortKey) {
+    if (sortKey === key) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
+    }
+  }
 
   // Totals are shown in ILS (home currency). Summing native marketValue across
   // TASE (ILS) and US (USD) positions would produce a meaningless mixed-currency
@@ -106,22 +163,18 @@ export default function PositionsPage() {
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
-              {[
-                "Ticker",
-                "Name",
-                "Market",
-                "Qty",
-                "Avg Cost",
-                "Current Price",
-                "Market Value",
-                "Unrealized P&L",
-                "Weight",
-              ].map((h) => (
+              {COLUMNS.map(({ label, key }) => (
                 <th
-                  key={h}
-                  className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500"
+                  key={key}
+                  onClick={() => handleSort(key)}
+                  className="cursor-pointer select-none px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 hover:text-gray-700"
                 >
-                  {h}
+                  <span className="inline-flex items-center gap-1">
+                    {label}
+                    <span className="w-3 text-center">
+                      {sortKey === key ? (sortDir === "asc" ? "▲" : "▼") : ""}
+                    </span>
+                  </span>
                 </th>
               ))}
             </tr>
@@ -136,7 +189,7 @@ export default function PositionsPage() {
                   Loading positions...
                 </td>
               </tr>
-            ) : !positions?.length ? (
+            ) : !sortedPositions.length ? (
               <tr>
                 <td
                   colSpan={9}
@@ -146,7 +199,7 @@ export default function PositionsPage() {
                 </td>
               </tr>
             ) : (
-              positions.map((pos) => (
+              sortedPositions.map((pos) => (
                 <tr key={pos.ticker} className="hover:bg-gray-50">
                   <td className="whitespace-nowrap px-4 py-3 text-sm font-medium">
                     <Link
