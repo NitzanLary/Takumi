@@ -36,6 +36,31 @@ try {
 const yahooFinance = new YahooFinance();
 
 /**
+ * Upsert a ticker's display name into the `securities` reference table.
+ * Called opportunistically after each successful Yahoo quote so the UI has
+ * a human-friendly name regardless of what stale label IBI attached to the
+ * user's original trade. Never throws — a failure here must not take the
+ * whole getLatestPrices call down.
+ */
+async function upsertSecurityName(
+  ticker: string,
+  name: string,
+  market: string,
+  currency: string,
+  yahooSymbol: string,
+): Promise<void> {
+  try {
+    await prisma.security.upsert({
+      where: { ticker },
+      create: { ticker, name, market, currency, yahooSymbol },
+      update: { name, yahooSymbol },
+    });
+  } catch (err) {
+    console.warn(`[market] Failed to upsert security name for ${ticker}:`, err);
+  }
+}
+
+/**
  * Resolve a ticker to its Yahoo Finance symbol.
  * US tickers pass through; TASE tickers are looked up in the map.
  */
@@ -169,6 +194,16 @@ export async function getLatestPrices(
             volume: q.regularMarketVolume ?? null,
           },
         });
+
+        // Cache the current display name alongside the quote so the Positions
+        // page can show e.g. "Meta Platforms, Inc." instead of IBI's stale
+        // "FACEBOOK(FB)" securityName after a ticker rename. longName is the
+        // richer form; fall back to shortName when Yahoo only has the short one.
+        const yahooName = q.longName ?? q.shortName ?? null;
+        if (yahooName) {
+          const inputMarket = inputByTicker.get(ticker)?.market ?? 'NYSE';
+          void upsertSecurityName(ticker, yahooName, inputMarket, currency, yahooSymbol);
+        }
       }
     } catch (err) {
       console.error('[market] Yahoo Finance fetch error:', err);

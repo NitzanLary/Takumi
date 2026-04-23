@@ -77,7 +77,7 @@ export default function StockDetailPage() {
 
       <div>
         {tab === "overview" && <OverviewTab summary={summary} />}
-        {tab === "trades" && <TradesTab ticker={ticker} />}
+        {tab === "trades" && <TradesTab ticker={ticker} priorNames={summary.priorNames} />}
         {tab === "round-trips" && <RoundTripsTab ticker={ticker} />}
         {tab === "dividends-fees" && <DividendsFeesTab ticker={ticker} />}
       </div>

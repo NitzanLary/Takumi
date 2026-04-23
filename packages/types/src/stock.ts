@@ -58,7 +58,10 @@ export interface StockCurrencyImpact {
 
 export interface StockSummary {
   ticker: string;
+  /** Current display name (Yahoo longName / shortName when available, else latest trade's securityName). */
   securityName: string;
+  /** Distinct legacy names from the user's own trades that differ from securityName — populated after ticker renames (e.g. "FACEBOOK(FB)" on the META page). */
+  priorNames: string[];
   market: Market;
   currency: Currency;
   sector: string | null;

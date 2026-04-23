@@ -3,9 +3,15 @@
 import { useQuery } from "@tanstack/react-query";
 import type { PaginatedResponse, Trade } from "@takumi/types";
 import { apiFetch } from "@/lib/api-client";
-import { formatCurrency, formatDate, formatNumber } from "@/lib/formatters";
+import { formatCurrency, formatDate, formatNumber, isHebrew } from "@/lib/formatters";
 
-export function TradesTab({ ticker }: { ticker: string }) {
+export function TradesTab({
+  ticker,
+  priorNames,
+}: {
+  ticker: string;
+  priorNames: string[];
+}) {
   const { data, isLoading } = useQuery({
     queryKey: ["stock-trades", ticker],
     queryFn: () =>
@@ -15,6 +21,7 @@ export function TradesTab({ ticker }: { ticker: string }) {
   });
 
   const trades = data?.data ?? [];
+  const priorNamesSet = new Set(priorNames);
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white">
@@ -56,10 +63,26 @@ export function TradesTab({ ticker }: { ticker: string }) {
             ) : (
               trades.map((t) => {
                 const proceeds = t.quantity * t.price;
+                // Surface the historical name on rows that pre-date a rename —
+                // e.g. the 2020 BUY on the META detail page still shows
+                // "FIVG US" here, which is the evidence behind the "Formerly
+                // known as" banner above. Only applies to names we classify
+                // as real renames (in priorNames), not IBI-vs-Yahoo format
+                // mismatches.
+                const isLegacyName = priorNamesSet.has(t.securityName);
                 return (
                   <tr key={t.id} className="hover:bg-gray-50">
                     <td className="whitespace-nowrap px-4 py-2 text-sm">
-                      {formatDate(t.tradeDate)}
+                      <div>{formatDate(t.tradeDate)}</div>
+                      {isLegacyName && (
+                        <div
+                          className="text-xs text-gray-400"
+                          dir={isHebrew(t.securityName) ? "rtl" : "ltr"}
+                          title="Security name at the time of this trade (ticker was later renamed)"
+                        >
+                          as {t.securityName}
+                        </div>
+                      )}
                     </td>
                     <td className="whitespace-nowrap px-4 py-2 text-sm">
                       <span

@@ -146,6 +146,20 @@ export async function runFifoMatching(userId: string): Promise<{
         }
       } else {
         // SELL — match against oldest buy lots (FIFO)
+        // MAKAM / bond "פדיון סופי" (final redemption) rows have שער ביצוע = 0
+        // because there is no per-share sell price on redemption — the cash is
+        // reported in תמורה בשקלים / תמורה במט"ח. Fall back to proceeds ÷ qty
+        // so FIFO doesn't treat the exit as $0 and manufacture a loss equal to
+        // the cost basis.
+        let effectiveSellPrice = price;
+        if (effectiveSellPrice === 0 && qty > 0) {
+          const proceeds =
+            trade.currency === 'USD'
+              ? Math.abs(toNum(trade.proceedsFx ?? 0))
+              : Math.abs(toNum(trade.proceedsIls ?? 0));
+          if (proceeds > 0) effectiveSellPrice = proceeds / qty;
+        }
+
         let remainingToSell = qty;
         const sellCommPerShare = qty > 0 ? commission / qty : 0;
 
@@ -157,7 +171,7 @@ export async function runFifoMatching(userId: string): Promise<{
           const sellCommission = matchQty * sellCommPerShare;
           const totalCommission = buyCommission + sellCommission;
 
-          const grossPnl = matchQty * (price - lot.price);
+          const grossPnl = matchQty * (effectiveSellPrice - lot.price);
           const realizedPnl = grossPnl - totalCommission;
 
           const holdingDays = Math.round(
@@ -171,7 +185,7 @@ export async function runFifoMatching(userId: string): Promise<{
             currency: trade.currency,
             quantity: matchQty,
             buyPrice: lot.price,
-            sellPrice: price,
+            sellPrice: effectiveSellPrice,
             buyDate: lot.date,
             sellDate: trade.tradeDate,
             commission: totalCommission,

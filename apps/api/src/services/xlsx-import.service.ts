@@ -28,17 +28,26 @@ export const DIRECTION_MAP: Record<string, Direction> = {
   "קניה רצף": "BUY",
   "מכירה חול מטח": "SELL",
   "מכירה רצף": "SELL",
+  "מכירה הצעת רכש": "SELL",       // Tender-offer sale (proceeds + capital gains tax like a regular sell)
+  "פדיון סופי": "SELL",            // MAKAM/bond final redemption — treated as sale for P&L
   "הפקדה דיבידנד מטח": "DIVIDEND",
+  "דיבידנד בעין": "BONUS",         // Dividend in kind / stock distribution (shares received, no cash)
+  "הפחתת הון": "SPLIT",            // Capital reduction (share-count adjustment, often negative qty)
   "משיכת מס חול מטח": "TAX",
   "משיכת מס מטח": "TAX",
+  "קניה מס (( ניעז)": "TAX",       // Tax withholding paired with in-kind dividend (IBI's literal label, double "((" intentional)
   "קניה שח": "CONVERSION",
   "מכירה שח": "CREDIT",
+  "הפקדה המרה": "CONVERSION",      // Ticker conversion / corporate action deposit side
+  "משיכה המרה": "CONVERSION",      // Ticker conversion / corporate action withdrawal side
   "העברה מזומן בשח": "TRANSFER",
   "הפקדה": "DEPOSIT",
   "משיכה": "WITHDRAWAL",
   "הטבה": "SPLIT",
   "דמי טפול מזומן בשח": "FEE",
+  "משיכת עמלה מטח": "FEE",         // FX-denominated commission charge
   "שונות מזומן בשח": "TRANSFER",
+  "ריבית מזומן בשח": "INTEREST",   // Interest accrued on cash balance
 };
 
 // ─── Security name parsing ────────────────────────────────────────────────
@@ -62,7 +71,18 @@ export interface ParsedSecurity {
  *   "B USD/ILS 3.631"    → USD/ILS (FX conversion)
  *   "תכ.בנקיםישרא"       → use symbol column (TASE)
  *   Admin names           → use symbol column
+ *
+ * Ticker renames: IBI updates the `symbol` column to the current trading
+ * ticker on rename (e.g. FIVG→SIXG, FB→META, KLTO→GRML) but leaves the
+ * historical `securityName` untouched. For US trades we therefore prefer
+ * the `symbol` column whenever it looks like a valid US ticker — otherwise
+ * the old and new rows key to different tickers and FIFO matching breaks,
+ * leaving a ghost open position of the legacy ticker. When the symbol is
+ * numeric (IBI's internal id for a delisted US security) we keep the
+ * name-derived ticker.
  */
+const US_TICKER_RE = /^[A-Z][A-Z0-9.-]{0,5}$/;
+
 export function parseSecurity(
   securityName: string,
   symbol: string | number,
@@ -70,6 +90,7 @@ export function parseSecurity(
 ): ParsedSecurity {
   const name = securityName.trim();
   const sym = String(symbol).trim();
+  const symIsUsTicker = US_TICKER_RE.test(sym);
 
   // Dividend: "דיב/ TQQQ US"
   const divMatch = name.match(/^דיב\/\s*(\w+)\s+US$/);
@@ -97,13 +118,21 @@ export function parseSecurity(
   // Company(TICKER) format: "PROSHARES(TQQQ)", "DIREXION(SPXL)", "DEFIANCE (QTUM)"
   const parenMatch = name.match(/\((\w+)\)/);
   if (parenMatch) {
-    return { ticker: parenMatch[1], securityName: name, market: "NYSE" };
+    return {
+      ticker: symIsUsTicker ? sym : parenMatch[1],
+      securityName: name,
+      market: "NYSE",
+    };
   }
 
   // Simple "TICKER US" format: "RGTI US", "IONQ US"
   const simpleUsMatch = name.match(/^(\w+)\s+US$/);
   if (simpleUsMatch) {
-    return { ticker: simpleUsMatch[1], securityName: name, market: "NYSE" };
+    return {
+      ticker: symIsUsTicker ? sym : simpleUsMatch[1],
+      securityName: name,
+      market: "NYSE",
+    };
   }
 
   // Admin/cash operations — IBI uses 900 and the 999xxxx range for tax/admin pseudo-tickers.
@@ -290,85 +319,170 @@ export async function importXlsx(userId: string, buffer: Buffer, fileName?: stri
   let skipped = 0;
   const errors: string[] = [];
 
+  // Transform every row into either a skip (unknown type) or a ready-to-upsert payload.
+  type Prepared = {
+    rowIndex: number;
+    tradeId: string;
+    data: {
+      userId: string;
+      tradeId: string;
+      ticker: string;
+      securityName: string;
+      market: Market | "FX" | "ADMIN";
+      direction: Direction;
+      quantity: number;
+      price: number;
+      currency: Currency;
+      commission: number;
+      proceedsFx: number | null;
+      proceedsIls: number | null;
+      capitalGainsTax: number | null;
+      tradeDate: Date;
+      source: "xlsx_import";
+      rawPayload: string;
+    };
+  };
+
+  const prepared: Prepared[] = [];
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
-    try {
-      const hebrewType = String(row.type || "");
-      let direction = DIRECTION_MAP[hebrewType.trim()];
-      if (!direction) {
-        errors.push(`Row ${i + 2}: Unknown transaction type "${hebrewType}"`);
-        skipped++;
-        continue;
-      }
-
-      const securityName = String(row.securityName || "");
-      const parsed = parseSecurity(securityName, row.symbol as string | number, hebrewType);
-      direction = refineDirection(direction, securityName, parsed.market);
-      const tradeId = generateTradeId(row);
-      const tradeDate = parseDate(String(row.date || ""));
-      const currency = parseCurrency(String(row.currency || ""));
-      const quantity = Number(row.quantity) || 0;
-      const rawPrice = Number(row.price) || 0;
-      // TASE securities quote שער ביצוע in agorot (1/100 ILS). Convert to ILS.
-      const price = parsed.market === "TASE" ? rawPrice / 100 : rawPrice;
-      const commission = Number(row.commission) || 0;
-      const proceedsFx = row.proceedsFx != null ? Number(row.proceedsFx) : null;
-      const proceedsIls = row.proceedsIls != null ? Number(row.proceedsIls) : null;
-      const capitalGainsTax = row.capitalGainsTax != null && Number(row.capitalGainsTax) !== 0
-        ? Number(row.capitalGainsTax)
-        : null;
-
-      // Store market as standard values; FX/ADMIN stay as-is for non-trade types
-      const market = parsed.market === "FX" || parsed.market === "ADMIN"
-        ? parsed.market
-        : parsed.market;
-
-      await prisma.trade.upsert({
-        where: {
-          userId_tradeId_source: {
-            userId,
-            tradeId,
-            source: "xlsx_import",
-          },
-        },
-        update: {
-          ticker: parsed.ticker,
-          securityName: parsed.securityName,
-          direction,
-          market,
-          quantity,
-          price,
-          currency,
-          commission,
-          proceedsFx,
-          proceedsIls,
-          capitalGainsTax,
-          rawPayload: JSON.stringify(row),
-        },
-        create: {
-          userId,
-          tradeId,
-          ticker: parsed.ticker,
-          securityName: parsed.securityName,
-          market,
-          direction,
-          quantity,
-          price,
-          currency,
-          commission,
-          proceedsFx,
-          proceedsIls,
-          capitalGainsTax,
-          tradeDate,
-          source: "xlsx_import",
-          rawPayload: JSON.stringify(row),
-        },
-      });
-      imported++;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      errors.push(`Row ${i + 2}: ${msg}`);
+    const hebrewType = String(row.type || "");
+    let direction = DIRECTION_MAP[hebrewType.trim()];
+    if (!direction) {
+      errors.push(`Row ${i + 2}: Unknown transaction type "${hebrewType}"`);
       skipped++;
+      continue;
+    }
+
+    const securityName = String(row.securityName || "");
+    const parsed = parseSecurity(securityName, row.symbol as string | number, hebrewType);
+    direction = refineDirection(direction, securityName, parsed.market);
+    const tradeId = generateTradeId(row);
+    const tradeDate = parseDate(String(row.date || ""));
+    const currency = parseCurrency(String(row.currency || ""));
+    const quantity = Number(row.quantity) || 0;
+    const rawPrice = Number(row.price) || 0;
+    // TASE securities quote שער ביצוע in agorot (1/100 ILS). Convert to ILS.
+    const price = parsed.market === "TASE" ? rawPrice / 100 : rawPrice;
+    const commission = Number(row.commission) || 0;
+    const proceedsFx = row.proceedsFx != null ? Number(row.proceedsFx) : null;
+    const proceedsIls = row.proceedsIls != null ? Number(row.proceedsIls) : null;
+    const capitalGainsTax = row.capitalGainsTax != null && Number(row.capitalGainsTax) !== 0
+      ? Number(row.capitalGainsTax)
+      : null;
+
+    prepared.push({
+      rowIndex: i,
+      tradeId,
+      data: {
+        userId,
+        tradeId,
+        ticker: parsed.ticker,
+        securityName: parsed.securityName,
+        market: parsed.market,
+        direction,
+        quantity,
+        price,
+        currency,
+        commission,
+        proceedsFx,
+        proceedsIls,
+        capitalGainsTax,
+        tradeDate,
+        source: "xlsx_import",
+        rawPayload: JSON.stringify(row),
+      },
+    });
+  }
+
+  // Bulk upsert strategy: pre-fetch which tradeIds already exist, then split
+  // into a single createMany (for new rows) and parallel updates (for existing).
+  // This collapses ~280 serial Prisma round-trips into effectively 2-3 — a
+  // serial loop against a remote Postgres (e.g. the Railway proxy from local
+  // dev) is ~100ms/row and blows past Next.js' proxy timeout.
+  const allTradeIds = prepared.map((p) => p.tradeId);
+  const existingRows = allTradeIds.length > 0
+    ? await prisma.trade.findMany({
+        where: {
+          userId,
+          source: "xlsx_import",
+          tradeId: { in: allTradeIds },
+        },
+        select: { tradeId: true },
+      })
+    : [];
+  const existingSet = new Set(existingRows.map((r) => r.tradeId));
+
+  const toCreate = prepared.filter((p) => !existingSet.has(p.tradeId));
+  const toUpdate = prepared.filter((p) => existingSet.has(p.tradeId));
+
+  if (toCreate.length > 0) {
+    try {
+      await prisma.trade.createMany({
+        data: toCreate.map((p) => p.data),
+        skipDuplicates: true,
+      });
+      imported += toCreate.length;
+    } catch (err) {
+      // createMany is all-or-nothing on driver errors, so fall back to
+      // per-row so we can still surface which rows failed.
+      const results = await Promise.allSettled(
+        toCreate.map((p) => prisma.trade.create({ data: p.data })),
+      );
+      for (let j = 0; j < results.length; j++) {
+        const r = results[j];
+        if (r.status === "fulfilled") {
+          imported++;
+        } else {
+          const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+          errors.push(`Row ${toCreate[j].rowIndex + 2}: ${msg}`);
+          skipped++;
+        }
+      }
+    }
+  }
+
+  // Updates still have to go one-by-one (no bulk updateMany-with-different-values
+  // in Prisma), but re-uploads are rare and the row count is usually small.
+  const UPDATE_CONCURRENCY = 10;
+  for (let i = 0; i < toUpdate.length; i += UPDATE_CONCURRENCY) {
+    const chunk = toUpdate.slice(i, i + UPDATE_CONCURRENCY);
+    const results = await Promise.allSettled(
+      chunk.map((p) =>
+        prisma.trade.update({
+          where: {
+            userId_tradeId_source: {
+              userId,
+              tradeId: p.tradeId,
+              source: "xlsx_import",
+            },
+          },
+          data: {
+            ticker: p.data.ticker,
+            securityName: p.data.securityName,
+            direction: p.data.direction,
+            market: p.data.market,
+            quantity: p.data.quantity,
+            price: p.data.price,
+            currency: p.data.currency,
+            commission: p.data.commission,
+            proceedsFx: p.data.proceedsFx,
+            proceedsIls: p.data.proceedsIls,
+            capitalGainsTax: p.data.capitalGainsTax,
+            rawPayload: p.data.rawPayload,
+          },
+        }),
+      ),
+    );
+    for (let j = 0; j < results.length; j++) {
+      const r = results[j];
+      if (r.status === "fulfilled") {
+        imported++;
+      } else {
+        const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
+        errors.push(`Row ${chunk[j].rowIndex + 2}: ${msg}`);
+        skipped++;
+      }
     }
   }
 

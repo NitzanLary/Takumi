@@ -9,6 +9,7 @@
 import { runFifoMatching, type OpenLot } from './pnl.service.js';
 import { getLatestPrices } from './market.service.js';
 import { getCurrentRate } from './exchange-rate.service.js';
+import { prisma } from '../lib/db.js';
 import type { PriceSource } from '@takumi/types';
 
 export interface OpenPosition {
@@ -59,14 +60,24 @@ export async function getOpenPositions(userId: string): Promise<OpenPosition[]> 
     currency: lots[0].currency,
   }));
 
-  // Fetch live prices and the current USD→ILS rate in parallel
-  const [prices, usdIlsRate] = await Promise.all([
+  // Fetch live prices, the current USD→ILS rate, and the cached display
+  // names (from the `securities` table, populated opportunistically on Yahoo
+  // quote hits) — all in parallel.
+  const tickerList = tickerInfos.map((t) => t.ticker);
+  const [prices, usdIlsRate, securities] = await Promise.all([
     getLatestPrices(tickerInfos),
     getCurrentRate().catch(() => {
       console.warn('[positions] No USD/ILS rate available; USD positions will not be weighted correctly');
       return 1;
     }),
+    tickerList.length > 0
+      ? prisma.security.findMany({
+          where: { ticker: { in: tickerList } },
+          select: { ticker: true, name: true },
+        })
+      : Promise.resolve([]),
   ]);
+  const nameByTicker = new Map(securities.map((s) => [s.ticker, s.name]));
 
   const positions: OpenPosition[] = [];
 
@@ -88,9 +99,12 @@ export async function getOpenPositions(userId: string): Promise<OpenPosition[]> 
     const totalCostIls = totalCost * fxRate;
     const unrealizedPnlIls = unrealizedPnl * fxRate;
 
+    // Prefer the cached Yahoo display name (e.g. "Meta Platforms, Inc.") over
+    // the trade's historical IBI securityName ("FACEBOOK(FB)") — the latter
+    // goes stale whenever IBI renames a ticker without rewriting old rows.
     positions.push({
       ticker,
-      securityName: first.securityName,
+      securityName: nameByTicker.get(ticker) ?? first.securityName,
       market: first.market,
       currency: first.currency,
       quantity: totalQty,

@@ -40,6 +40,23 @@ export function StockHeader({ summary }: { summary: StockSummary }) {
               {summary.securityName}
             </span>
           </div>
+          {summary.priorNames.length > 0 && (
+            <p className="mt-1 text-xs text-gray-500">
+              Formerly known as{" "}
+              {summary.priorNames.map((n, i) => (
+                <span key={n}>
+                  <span
+                    className="font-medium text-gray-700"
+                    dir={isHebrew(n) ? "rtl" : "ltr"}
+                  >
+                    {n}
+                  </span>
+                  {i < summary.priorNames.length - 1 ? ", " : ""}
+                </span>
+              ))}
+              {" "}— the broker renamed this security, trade history below reflects original labels.
+            </p>
+          )}
           <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
             <span className="rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-700">
               {summary.market}

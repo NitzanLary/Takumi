@@ -39,6 +39,19 @@ function toNum(d: unknown): number {
 }
 
 /**
+ * Pull the embedded ticker out of IBI's securityName string. Handles the two
+ * US-style shapes IBI emits: "COMPANY(TICKER)" and "TICKER US". Returns null
+ * for anything else (Hebrew TASE names, FX rows, admin codes, etc).
+ */
+function extractEmbeddedTicker(securityName: string): string | null {
+  const paren = securityName.match(/\(([A-Z][A-Z0-9.-]{0,5})\)/);
+  if (paren) return paren[1];
+  const us = securityName.match(/^([A-Z][A-Z0-9.-]{0,5})\s+US$/);
+  if (us) return us[1];
+  return null;
+}
+
+/**
  * Build the full summary payload for one ticker. Works for open AND closed
  * positions — closed positions return position=null, isClosed=true.
  */
@@ -194,9 +207,40 @@ export async function getStockSummary(
 
   const sectorEntry = sectorMap[ticker] ?? null;
 
+  // Resolve display name: prefer the Yahoo-derived name cached in the
+  // `securities` table (kept current automatically on every quote hit). Fall
+  // back to whatever securityName the most recent BUY/SELL carried — that's
+  // what the user saw at trade time.
+  const security = await prisma.security.findUnique({
+    where: { ticker },
+    select: { name: true },
+  });
+  const coreTrades = [...buys, ...sells].sort(
+    (a, b) => b.tradeDate.getTime() - a.tradeDate.getTime(),
+  );
+  const latestCoreName = coreTrades[0]?.securityName ?? first.securityName;
+  const currentName = security?.name ?? latestCoreName;
+
+  // Prior names: legacy securityName values that embed a ticker DIFFERENT
+  // from the current one — i.e. true broker renames, not just IBI-vs-Yahoo
+  // formatting mismatches. "ASTS US" vs Yahoo's "AST SpaceMobile, Inc." is
+  // the same ticker and should be silent; "FIVG US" on a SIXG page (or
+  // "FACEBOOK(FB)" on a META page) is a real rename and worth surfacing.
+  const priorNamesSet = new Set<string>();
+  for (const t of coreTrades) {
+    if (!t.securityName || t.securityName === currentName) continue;
+    const embedded = extractEmbeddedTicker(t.securityName);
+    // No embedded ticker (Hebrew TASE names, etc) — skip, we can't tell
+    // whether it's a rename or a format difference.
+    if (!embedded) continue;
+    if (embedded !== ticker) priorNamesSet.add(t.securityName);
+  }
+  const priorNames = Array.from(priorNamesSet);
+
   return {
     ticker,
-    securityName: first.securityName,
+    securityName: currentName,
+    priorNames,
     market,
     currency,
     sector: sectorEntry?.sector ?? null,
