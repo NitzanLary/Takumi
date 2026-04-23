@@ -14,14 +14,23 @@ export async function fetchSSE(
   path: string,
   body: unknown,
   onEvent: (event: AiSseEvent) => void,
-  onError?: (error: Error) => void
+  onError?: (error: Error) => void,
+  signal?: AbortSignal
 ): Promise<void> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    method: 'POST',
-    credentials: 'same-origin',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal,
+    });
+  } catch (err) {
+    if ((err as Error).name === 'AbortError') return;
+    onError?.(err as Error);
+    return;
+  }
 
   if (response.status === 401 && typeof window !== 'undefined') {
     const next = encodeURIComponent(window.location.pathname + window.location.search);
@@ -80,6 +89,7 @@ export async function fetchSSE(
       }
     }
   } catch (err) {
+    if ((err as Error).name === 'AbortError') return;
     onError?.(err as Error);
   }
 }

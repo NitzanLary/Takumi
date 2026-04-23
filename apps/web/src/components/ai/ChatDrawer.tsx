@@ -14,6 +14,7 @@ export function ChatDrawer() {
     isStreaming,
     error,
     sendMessage,
+    stopStreaming,
     conversations,
     activeConversationId,
     loadConversations,
@@ -174,7 +175,11 @@ export function ChatDrawer() {
         </div>
 
         {/* Input */}
-        <ChatInput onSend={sendMessage} disabled={isStreaming} />
+        <ChatInput
+          onSend={sendMessage}
+          disabled={isStreaming}
+          onStop={stopStreaming}
+        />
       </div>
     </>
   );

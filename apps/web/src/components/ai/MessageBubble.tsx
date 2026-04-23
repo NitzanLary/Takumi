@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import type { ChatMessage, ToolCallInfo } from "@/stores/chat-store";
 
 interface MessageBubbleProps {
@@ -20,6 +21,11 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   }
 
   // Assistant message
+  const showTypingIndicator =
+    message.isStreaming &&
+    !message.content &&
+    message.toolCalls.length === 0;
+
   return (
     <div className="flex justify-start">
       <div className="max-w-[90%] space-y-2">
@@ -32,11 +38,45 @@ export function MessageBubble({ message }: MessageBubbleProps) {
           </div>
         )}
 
+        {/* Typing indicator — visible from send until first chunk arrives */}
+        {showTypingIndicator && (
+          <div className="rounded-2xl rounded-bl-md bg-white px-4 py-3 shadow-sm ring-1 ring-gray-200">
+            <div className="flex items-center gap-1">
+              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.3s]" />
+              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400 [animation-delay:-0.15s]" />
+              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-gray-400" />
+            </div>
+          </div>
+        )}
+
         {/* Text content */}
         {message.content && (
           <div className="rounded-2xl rounded-bl-md bg-white px-4 py-2.5 text-sm text-gray-900 shadow-sm ring-1 ring-gray-200">
             <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-ol:my-1 prose-li:my-0.5 prose-headings:mb-1 prose-headings:mt-2 prose-table:my-1 prose-pre:my-1">
-              <ReactMarkdown>{message.content}</ReactMarkdown>
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  table: ({ children }) => (
+                    <div className="-mx-1 my-1 overflow-x-auto">
+                      <table className="w-full border-collapse text-xs">
+                        {children}
+                      </table>
+                    </div>
+                  ),
+                  th: ({ children }) => (
+                    <th className="border-b border-gray-300 px-2 py-1 text-left font-semibold">
+                      {children}
+                    </th>
+                  ),
+                  td: ({ children }) => (
+                    <td className="border-b border-gray-100 px-2 py-1 align-top">
+                      {children}
+                    </td>
+                  ),
+                }}
+              >
+                {message.content}
+              </ReactMarkdown>
             </div>
           </div>
         )}

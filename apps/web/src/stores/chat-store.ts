@@ -24,6 +24,7 @@ export interface ChatMessage {
   content: string;
   toolCalls: ToolCallInfo[];
   createdAt: string;
+  isStreaming?: boolean;
 }
 
 export interface ConversationSummary {
@@ -54,11 +55,15 @@ interface ChatState {
   isStreaming: boolean;
   error: string | null;
   sendMessage: (text: string) => Promise<void>;
+  stopStreaming: () => void;
 }
 
 function generateId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
+
+// Held outside the store — it's a transient handle, not observable state.
+let activeAbortController: AbortController | null = null;
 
 export const useChatStore = create<ChatState>((set, get) => ({
   // ─── Drawer ─────────────────────────────
@@ -176,13 +181,15 @@ export const useChatStore = create<ChatState>((set, get) => ({
       createdAt: new Date().toISOString(),
     };
 
-    // Add placeholder assistant message
+    // Add placeholder assistant message — `isStreaming: true` triggers the
+    // typing-dots indicator in MessageBubble until the first chunk arrives.
     const assistantMsg: ChatMessage = {
       id: generateId(),
       role: 'assistant',
       content: '',
       toolCalls: [],
       createdAt: new Date().toISOString(),
+      isStreaming: true,
     };
 
     set({
@@ -192,6 +199,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
 
     const assistantId = assistantMsg.id;
+    const controller = new AbortController();
+    activeAbortController = controller;
 
     await fetchSSE(
       '/api/chat',
@@ -240,6 +249,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
           }
 
           case 'done':
+            assistant.isStreaming = false;
             if (event.conversationId) {
               set({ activeConversationId: event.conversationId });
             }
@@ -249,6 +259,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
             break;
 
           case 'error':
+            assistant.isStreaming = false;
             set({
               isStreaming: false,
               error: event.error || 'An error occurred',
@@ -260,11 +271,33 @@ export const useChatStore = create<ChatState>((set, get) => ({
         set({ messages: msgs });
       },
       (error) => {
+        const state = get();
+        const msgs = state.messages.map((m) =>
+          m.id === assistantId ? { ...m, isStreaming: false } : m
+        );
         set({
+          messages: msgs,
           isStreaming: false,
           error: error.message || 'Connection failed',
         });
-      }
+      },
+      controller.signal
     );
+
+    if (activeAbortController === controller) {
+      activeAbortController = null;
+    }
+  },
+
+  stopStreaming: () => {
+    if (activeAbortController) {
+      activeAbortController.abort();
+      activeAbortController = null;
+    }
+    const state = get();
+    const msgs = state.messages.map((m) =>
+      m.isStreaming ? { ...m, isStreaming: false } : m
+    );
+    set({ messages: msgs, isStreaming: false });
   },
 }));
