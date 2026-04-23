@@ -18,9 +18,16 @@ export async function fetchSSE(
 ): Promise<void> {
   const response = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+
+  if (response.status === 401 && typeof window !== 'undefined') {
+    const next = encodeURIComponent(window.location.pathname + window.location.search);
+    window.location.href = `/login?next=${next}`;
+    return;
+  }
 
   if (!response.ok) {
     const errorText = await response.text().catch(() => 'Unknown error');

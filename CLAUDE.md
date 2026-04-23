@@ -4,22 +4,25 @@
 
 ## What This Is
 
-A single-user web app for an independent investor (Nitzan) who trades Israeli (TASE) and US (NYSE/NASDAQ) equities through IBI broker. Transactions are imported from IBI's XLSX exports. Provides analytics dashboards and features a persistent AI chat agent powered by Claude.
+A multi-user web app for independent investors trading Israeli (TASE) and US (NYSE/NASDAQ) equities through IBI broker. Transactions are imported from IBI's XLSX exports. Provides analytics dashboards and a persistent AI chat agent powered by Claude. All data is per-user — trades, positions, alerts, conversations, and snapshots are scoped by `user_id`.
 
 The full PRD is in `Takumi_PRD.md` at the project root — refer to it for detailed requirements, agent tool definitions (24 tools across 3 tiers), alert types, data enrichment strategy, and example conversations.
 
 ## Architecture
 
 ```
-Browser  →  Next.js web (basic auth)  →  rewrites /api/*  →  Express API (private)  →  Postgres
-                                                                   ↕
-                                                            Anthropic Claude API
+Browser  →  Next.js web (session cookie gate)  →  rewrites /api/*  →  Express API (private)  →  Postgres
+                                                                                ↕
+                                                                         Anthropic Claude API
+                                                                                ↕
+                                                                         Resend (transactional email)
 ```
 
-- **Frontend** calls relative `/api/*` URLs. Next.js rewrites them server-side to the API service (via `API_URL` env var). The browser never sees the API origin directly — one auth prompt, no CORS.
-- **Express** is the single gateway — orchestrates import, analytics, AI, alerts. Defense-in-depth: also protected by basic auth.
+- **Frontend** calls relative `/api/*` URLs. Next.js rewrites them server-side to the API service (via `API_URL` env var). The browser never sees the API origin directly. `src/middleware.ts` redirects unauthenticated requests to `/login` (checked via presence of `takumi_session` cookie).
+- **Express** is the single gateway. All routes except `/api/health` and `/api/auth/*` require a valid session (enforced by `requireAuth` middleware). `req.user.id` is set on every authenticated request — services accept `userId` as their first argument and every Prisma query scopes by it.
+- **Auth** — email + password with email verification. Passwords hashed with bcrypt (cost 12). Session tokens are 32-byte random strings, stored as SHA-256 hashes in the `sessions` table. Cookie is httpOnly, Secure (prod), SameSite=Lax, 30-day rolling expiry. Verification + password-reset tokens live in `verification_tokens`.
 - **Data import** — XLSX files exported from IBI are uploaded via the `/import` page and parsed by `xlsx-import.service.ts`.
-- **Database** — Prisma schema is PostgreSQL. Dev runs against local Postgres (or swap provider back to sqlite locally). Prod uses Railway Postgres.
+- **Database** — Prisma schema is PostgreSQL. Dev and prod both use Postgres (Railway for prod).
 
 ## Monorepo Structure
 
@@ -28,17 +31,18 @@ takumi/
 ├── apps/
 │   ├── web/                  # Next.js 14, App Router, Tailwind, TanStack Query
 │   │   └── src/
-│   │       ├── app/          # Pages: dashboard, positions, positions/[ticker], history, analytics, import, alerts, settings
-│   │       ├── components/   # Providers.tsx, layout/Sidebar.tsx, layout/TopBar.tsx, ai/ChatDrawer.tsx, ai/MessageBubble.tsx, ai/ChatInput.tsx, ai/QuickActions.tsx, stock/StockHeader.tsx, stock/OverviewTab.tsx, stock/TradesTab.tsx, stock/RoundTripsTab.tsx, stock/DividendsFeesTab.tsx, stock/StockChart.tsx
-│   │       ├── stores/       # chat-store.ts (Zustand store for AI chat state)
-│   │       └── lib/          # api-client.ts, formatters.ts, sse-client.ts
+│   │       ├── app/          # Pages: dashboard, positions, positions/[ticker], history, analytics, import, alerts, settings, login, signup, verify-email, forgot-password, reset-password
+│   │       ├── middleware.ts # Session-cookie gate; redirects to /login when unauthenticated
+│   │       ├── components/   # Providers.tsx, UserProvider.tsx, layout/AppShell.tsx, layout/Sidebar.tsx, layout/TopBar.tsx (with UserMenu), auth/AuthCard.tsx, ai/ChatDrawer.tsx, ai/MessageBubble.tsx, ai/ChatInput.tsx, ai/QuickActions.tsx, stock/StockHeader.tsx, stock/OverviewTab.tsx, stock/TradesTab.tsx, stock/RoundTripsTab.tsx, stock/DividendsFeesTab.tsx, stock/StockChart.tsx
+│   │       ├── stores/       # chat-store.ts, ui-store.ts
+│   │       └── lib/          # api-client.ts (401→/login redirect), formatters.ts, sse-client.ts
 │   └── api/                  # Express 5, TypeScript, Prisma
 │       └── src/
-│           ├── index.ts      # App entry — registers routes
-│           ├── routes/       # trades.ts, sync.ts, positions.ts, analytics.ts, market.ts, exchange-rates.ts, snapshots.ts, stock.ts, chat.ts
-│           ├── services/     # trade.service.ts, sync.service.ts, xlsx-import.service.ts, pnl.service.ts, position.service.ts, analytics.service.ts, market.service.ts, themarker.service.ts, stooq.service.ts, exchange-rate.service.ts, snapshot.service.ts, risk.service.ts, whatif.service.ts, stock-detail.service.ts
+│           ├── index.ts      # App entry — registers auth router (public) + requireAuth + resource routers
+│           ├── routes/       # auth.ts, trades.ts, sync.ts, positions.ts, analytics.ts, market.ts, exchange-rates.ts, snapshots.ts, stock.ts, chat.ts
+│           ├── services/     # trade.service.ts, sync.service.ts, xlsx-import.service.ts, pnl.service.ts, position.service.ts, analytics.service.ts, market.service.ts, themarker.service.ts, stooq.service.ts, exchange-rate.service.ts, snapshot.service.ts, risk.service.ts, whatif.service.ts, stock-detail.service.ts, email.service.ts
 │           ├── data/         # tase-ticker-map.json, sector-map.json
-│           ├── middleware/    # error-handler.ts
+│           ├── middleware/   # error-handler.ts, require-auth.ts
 │           ├── lib/          # config.ts, db.ts
 │           └── ai/           # system-prompt.ts, chat-handler.ts, conversation.service.ts, tools/ (core-tools.ts, tier1-tools.ts, tier2-tools.ts, index.ts)
 ├── packages/
@@ -48,7 +52,8 @@ takumi/
 │       └── src/              # trade.ts, sync.ts, position.ts, alert.ts, analytics.ts, api.ts, market.ts, stock.ts
 ├── scripts/
 │   ├── dev.sh                # Start API + frontend
-│   └── seed.ts               # Populate DB with 12 sample trades
+│   ├── seed.ts               # Populate DB with 12 sample trades
+│   └── bootstrap-users.ts    # One-time: create primary user from BOOTSTRAP_USER_EMAIL/PASSWORD and backfill user_id on legacy rows. Idempotent.
 ├── .env                      # Local secrets (never committed)
 ├── .env.example              # Template with all required vars
 └── Takumi_PRD.md             # Full product requirements document
@@ -78,36 +83,53 @@ All secrets live in `.env` at project root. The API loads it via `dotenv` in `ap
 
 | Variable | Purpose |
 |---|---|
-| `DATABASE_URL` | Must be an **absolute** `file:` path for SQLite |
-| `ANTHROPIC_API_KEY` | Claude API key (Phase 3) |
+| `DATABASE_URL` | Postgres connection string |
+| `ANTHROPIC_API_KEY` | Claude API key |
 | `API_PORT` / `WEB_PORT` | Express (:3001) and Next.js (:3000) ports |
+| `APP_URL` | Public URL of the web app — embedded into verification + password-reset email links |
+| `RESEND_API_KEY` | Resend transactional email API key. Unset = email sends become console logs (fine for dev). |
+| `EMAIL_FROM` | From address used by Resend (e.g. `"Takumi <onboarding@resend.dev>"`) |
+| `AUTH_DEV_BYPASS_USER_ID` | **Dev-only.** If set, `requireAuth` resolves this user without session lookup. Never set in prod. |
+| `BOOTSTRAP_USER_EMAIL` / `BOOTSTRAP_USER_PASSWORD` | Consumed only by `scripts/bootstrap-users.ts` (one-time migration to backfill the primary user). |
 
 ## Database
 
-Schema in `packages/db/prisma/schema.prisma`. SQLite provider, Prisma ORM.
+Schema in `packages/db/prisma/schema.prisma`. PostgreSQL provider, Prisma ORM.
 
-**Tables (10 total):**
+**Tables (12 total):**
 
 | Table | Purpose | Key Notes |
 |---|---|---|
-| `trades` | All transaction records (trades + non-trades) | Unique on `(tradeId, source)`. `direction` field: BUY/SELL for core trades; DIVIDEND, TAX, FEE, TRANSFER, CONVERSION, CREDIT, DEPOSIT, WITHDRAWAL, SPLIT for non-trades. Extra fields: `proceeds_fx`, `proceeds_ils`, `capital_gains_tax`. All services filter to BUY/SELL by default. |
-| `securities` | Security reference data | Unique on `ticker`. Extended with `yahoo_symbol`, `industry`, `market_cap_bucket` (Phase 3). |
-| `sync_log` | Import run history | Indexed by `synced_at DESC`. Has `file_name` column for tracking imported XLSX filenames. |
-| `alerts` | Price/P&L/duration alerts | 6 types: price_drop, price_target, holding_duration, portfolio_pnl, sync_failure, inactivity |
-| `market_prices` | Cached market prices | Indexed by `(ticker, fetched_at DESC)`. Extended with `day_change`, `day_change_pct`, `high_52w`, `low_52w`, `volume` (Phase 3). |
-| `exchange_rates` | Daily ILS/USD rates | Unique on `date` |
-| `portfolio_snapshots` | Daily portfolio value snapshots | Unique on `date`. Stores total value, cost basis, unrealized/realized P&L, position count, positions JSON. Used for equity curve. |
-| `ai_conversations` | Chat sessions | Has many `ai_messages` |
-| `ai_messages` | Individual chat messages | Role: user/assistant/tool; optional `tool_calls` JSON |
-| `user_preferences` | Single-row settings | id="default"; currency, cost basis method |
+| `users` | Accounts | Unique on `email`. Columns: `password_hash` (bcrypt cost 12), `email_verified_at`, `display_name`, `currency_pref`, `cost_basis_method`, timestamps. |
+| `sessions` | Active login sessions | `token_hash` = SHA-256 of the opaque cookie value. 30-day expiry with rolling refresh on activity. Cascades on user delete. |
+| `verification_tokens` | Email-verify + password-reset tokens | `purpose` ∈ {`email_verify`, `password_reset`}. `token_hash`, `expires_at`, `consumed_at`. Indexed by `(userId, purpose)`. |
+| `trades` | All transaction records (trades + non-trades) | Unique on `(userId, tradeId, source)`. `user_id` FK cascades. `direction` field: BUY/SELL for core trades; DIVIDEND, TAX, FEE, TRANSFER, CONVERSION, CREDIT, DEPOSIT, WITHDRAWAL, SPLIT for non-trades. Extra fields: `proceeds_fx`, `proceeds_ils`, `capital_gains_tax`. All services filter to BUY/SELL by default and scope by `userId`. |
+| `securities` | Security reference data (shared across users) | Unique on `ticker`. Extended with `yahoo_symbol`, `industry`, `market_cap_bucket` (Phase 3). |
+| `sync_log` | Import run history | Per-user. Indexed by `(userId, synced_at DESC)`. Has `file_name` column for tracking imported XLSX filenames. |
+| `alerts` | Price/P&L/duration alerts | Per-user. 6 types: price_drop, price_target, holding_duration, portfolio_pnl, sync_failure, inactivity |
+| `market_prices` | Cached market prices (shared) | Indexed by `(ticker, fetched_at DESC)`. |
+| `exchange_rates` | Daily ILS/USD rates (shared) | Unique on `date` |
+| `portfolio_snapshots` | Daily portfolio value snapshots | Per-user, unique on `(userId, date)`. |
+| `ai_conversations` | Chat sessions | Per-user, indexed by `(userId, updatedAt)`. Has many `ai_messages`. |
+| `ai_messages` | Individual chat messages | Role: user/assistant/tool; optional `tool_calls` JSON. Scoped by conversation (which is per-user). |
 
-All monetary fields use `Decimal` (not Float).
+All monetary fields use `Decimal` (not Float). The legacy `user_preferences` singleton table was dropped in Commit B — per-user prefs now live on `users.currency_pref` / `users.cost_basis_method`.
 
 ## API Routes (Express)
 
+All routes except `/api/health` and `/api/auth/*` require a valid session cookie. `requireAuth` middleware sets `req.user = { id, email }`.
+
 | Method | Route | Handler | Purpose |
 |---|---|---|---|
-| GET | `/api/health` | inline | Health check |
+| GET | `/api/health` | inline | Health check (public) |
+| POST | `/api/auth/signup` | auth.ts | Create account (email+password+optional displayName); sends verification email |
+| POST | `/api/auth/login` | auth.ts | Exchange email+password for session cookie. Rejects unverified emails. |
+| POST | `/api/auth/logout` | auth.ts | Delete session row and clear cookie |
+| GET | `/api/auth/me` | auth.ts | Current user (used by UserProvider to bootstrap) |
+| POST | `/api/auth/verify-email` | auth.ts | Consume verification token |
+| POST | `/api/auth/resend-verification` | auth.ts | Re-send verification email (always 200 to avoid user enumeration) |
+| POST | `/api/auth/forgot-password` | auth.ts | Issue reset token, send email (always 200) |
+| POST | `/api/auth/reset-password` | auth.ts | Consume reset token, set new password, invalidate existing sessions |
 | GET | `/api/trades` | trades.ts | List trades (paginated, filterable by ticker/market/direction). Defaults to core trades (BUY/SELL) only; pass `includeNonTrades=true` for all transactions |
 | GET | `/api/sync/status` | sync.ts | Last import status |
 | GET | `/api/sync/log` | sync.ts | Import history (limit query param) |
@@ -136,8 +158,15 @@ All monetary fields use `Decimal` (not Float).
 
 ## Frontend Pages
 
+Auth pages (`/login`, `/signup`, `/verify-email`, `/forgot-password`, `/reset-password`) are rendered by `AppShell` without the sidebar/topbar chrome. Every other page requires a session cookie — unauthenticated requests are redirected to `/login?next=<original-path>` by `src/middleware.ts`.
+
 | Route | Status | Description |
 |---|---|---|
+| `/login` | **Functional** | Email + password sign-in. Preserves `?next=` for post-login redirect. |
+| `/signup` | **Functional** | Email + password + optional display name. Sends verification email; user can't log in until verified. |
+| `/verify-email` | **Functional** | Consumes `?token=`, shows success/error state, links to `/login`. |
+| `/forgot-password` | **Functional** | Email → reset link. Always shows "check your email" to avoid user enumeration. |
+| `/reset-password` | **Functional** | `?token=` + new password + confirm. Invalidates all existing sessions for that user on success. |
 | `/dashboard` | **Functional** | Single pane of glass for portfolio state and performance. **Portfolio Total** card (ILS home currency) showing Market Value, Unrealized P&L, Realized P&L, and Total P&L with USD equivalent under each. **Per-market cards** (TASE, US) showing the same four rows in native currency with cross-currency equivalent. **Realized-window toggle** (All-time / YTD / 12M, persisted in URL `?window=`) affects only Realized P&L and Total P&L. Equity curve (Recharts, from portfolio snapshots). Components live in `apps/web/src/components/dashboard/` (`MoneyLine`, `WindowToggle`, `PortfolioTotalCard`, `MarketCard`). |
 | `/positions` | **Functional** | Open positions table with live market prices (Yahoo Finance), day change %, unrealized P&L, weight %. Refresh Prices button. Auto-refetch every 60s. Shows placeholder warning for unmapped TASE tickers. Ticker cells link to `/positions/:ticker`. |
 | `/positions/:ticker` | **Functional** | Per-stock detail page. Header (shares, avg cost, current price, day change, market value, unrealized P&L, weight, sector, first buy date, holding duration). Tabs: Overview (KPI cards + open FIFO lots), Trades (raw BUY/SELL list), Round-trips (completed buy→sell cycles with holding and return), Dividends & Fees (dividend payments with withheld tax + per-trade commissions). Price chart docked at bottom with green/red buy/sell markers and dashed avg-cost line. Works for open AND closed positions. Also reachable from `/history` and `/analytics` ticker cells. Components in `apps/web/src/components/stock/`. |
@@ -151,6 +180,8 @@ All monetary fields use `Decimal` (not Float).
 
 ## Conventions
 
+- **Per-user data scoping (CRITICAL)** — every backend service function that touches per-user tables (`trades`, `alerts`, `portfolio_snapshots`, `ai_conversations`, `sync_log`) takes `userId` as its first argument and threads it into the Prisma `where` clause. Route handlers get `userId` from `req.user!.id` (guaranteed by `requireAuth`). The in-memory FIFO match cache in `pnl.service.ts` is keyed by `userId` — a single-key cache would leak one user's FIFO results to another within the 1-minute TTL. The `securities`, `market_prices`, and `exchange_rates` tables are shared and intentionally NOT scoped by user. AI tool executors have the signature `(userId, input) => Promise<unknown>` and the chat handler passes `req.user!.id` through `executeTool`.
+- **Auth middleware** — `requireAuth` is mounted once via `app.use("/api", requireAuth)` in `apps/api/src/index.ts`, AFTER the public routes (`/api/health`, `/api/auth/*`). It checks the `takumi_session` cookie against the `sessions` table (SHA-256 of the raw value is stored), rejects expired or email-unverified sessions, and sets `req.user`. Rolling refresh: if the session hasn't been touched in >24h, its expiry is bumped by 30d (fire-and-forget).
 - **TypeScript** for all Node.js code (ESM — `"type": "module"` everywhere)
 - **File extensions in imports** — always use `.js` in TypeScript import paths (`./lib/config.js`)
 - **Shared types** live in `@takumi/types`, not duplicated across apps
@@ -259,17 +290,17 @@ All monetary fields use `Decimal` (not Float).
 
 Hosted on Railway at https://web-production-7a48c.up.railway.app — project ID `3a1f80a2-97df-4762-9187-4e6cf4781e76`. Three services: `web`, `api`, `Postgres`.
 
-**Access** — HTTP Basic Auth (user `nitzan`, password stored in `BASIC_AUTH_PASS` on both `web` and `api` services). Enforced by Next.js `src/middleware.ts` on the web service and `express-basic-auth` on the API service. Change the password any time via `railway variable set BASIC_AUTH_PASS=... --service web` and again for `--service api`.
+**Access** — Email + password with email verification (Resend). Session cookies (`takumi_session`) are validated on every API request. The previous HTTP Basic Auth layer was removed in the multi-user migration. The primary user (`nitzan.lary@gmail.com`) was created and backfilled with all pre-migration data by `scripts/bootstrap-users.ts`.
 
 **Service topology:**
-- `web` (Next.js) — only service with a public domain. Middleware enforces basic auth on all routes. `next.config.mjs` rewrites `/api/:path*` to `${API_URL}/api/:path*` server-side, where `API_URL=http://${{api.RAILWAY_PRIVATE_DOMAIN}}:${{api.PORT}}`.
+- `web` (Next.js) — only service with a public domain. `src/middleware.ts` redirects unauthenticated requests (no session cookie) to `/login`. `next.config.mjs` rewrites `/api/:path*` to `${API_URL}/api/:path*` server-side, where `API_URL=http://${{api.RAILWAY_PRIVATE_DOMAIN}}:${{api.PORT}}`.
 - `api` (Express) — private-only (no public domain). Explicitly listens on `::` (IPv6+IPv4) which Railway's private networking requires. `PORT=3001` must be set as a service variable so `${{api.PORT}}` resolves in the web service's `API_URL`.
 - `Postgres` — managed plugin, referenced as `${{Postgres.DATABASE_URL}}` from api.
 
 **Deploy flow:**
-- `railway up --service <svc> --detach -m "msg"` — uploads local tree. This is how we currently ship (GitHub repo is not yet connected as a Railway source).
+- We now deploy by pushing to GitHub — Railway auto-deploys on push to `master`.
 - API build: `pnpm install --frozen-lockfile=false && pnpm --filter @takumi/db exec prisma generate`.
-- API preDeploy: `pnpm --filter @takumi/db exec prisma db push` (idempotent schema sync — keep schema compatible or push will fail without `--accept-data-loss`).
+- API preDeploy: `pnpm --filter @takumi/db exec prisma db push && pnpm --filter @takumi/api run bootstrap-users` (schema sync + idempotent primary-user bootstrap; script is a no-op after first successful run).
 - API start: `pnpm --filter @takumi/api start` (uses `tsx`, not a compiled `dist/`, so workspace TypeScript deps work).
 - Web build: `pnpm install --frozen-lockfile=false && pnpm --filter @takumi/web build`.
 - Web start: `pnpm --filter @takumi/web start` → `next start -H ::`.
@@ -281,16 +312,19 @@ Hosted on Railway at https://web-production-7a48c.up.railway.app — project ID 
 | api | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
 | api | `ANTHROPIC_API_KEY` | Claude key |
 | api | `PORT` | `3001` (explicit, so `${{api.PORT}}` resolves for web's `API_URL`) |
-| api | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | shared with web |
+| api | `APP_URL` | Public URL of the web service — used in verification + reset emails |
+| api | `RESEND_API_KEY` | Resend API key for transactional email (unset = log-only) |
+| api | `EMAIL_FROM` | `"Takumi <onboarding@resend.dev>"` (or your verified domain sender) |
+| api | `BOOTSTRAP_USER_EMAIL` / `BOOTSTRAP_USER_PASSWORD` | One-time, consumed by bootstrap-users.ts. Safe to leave set — script is idempotent. |
 | web | `API_URL` | `http://${{api.RAILWAY_PRIVATE_DOMAIN}}:${{api.PORT}}` |
-| web | `BASIC_AUTH_USER` / `BASIC_AUTH_PASS` | shared with api |
 
-**Local dev vs prod** — In dev, leave basic auth vars unset and both the Next.js middleware and Express middleware become no-ops. `API_URL` defaults to `http://localhost:3001`. Same `/api/*` paths work locally via the same rewrite.
+**Local dev vs prod** — `API_URL` defaults to `http://localhost:3001`. Same `/api/*` paths work locally via the same rewrite. For local dev without running the full auth flow, set `AUTH_DEV_BYPASS_USER_ID` on the api service to your user's id — `requireAuth` will resolve that user without a session cookie. NEVER set this in prod.
 
 ## External Services
 
 | Service | Purpose | Phase | Status | Notes |
 |---|---|---|---|---|
+| Resend | Transactional email (verification, password reset) | 5 | **Active** | REST API called directly (no SDK). No-op when `RESEND_API_KEY` unset — logs the email instead. |
 | Yahoo Finance (`yahoo-finance2` v3) | Live prices, benchmarks (TA-125, S&P 500) | 3 | **Active** | TASE tickers resolved via `tase-ticker-map.json` → `.TA` suffix. 15-min cache staleness. |
 | TheMarker Finance (scrape) | Price fallback for unmapped TASE tickers (mutual funds) | 3 | **Active** | Scrapes `finance.themarker.com/stock/{paperId}` `__NEXT_DATA__` Apollo cache. No auth, no mapping. Agorot → ILS. No 52w high/low. |
 | Stooq (CSV API) | Price fallback for US tickers + S&P 500 when Yahoo is blocked | 3 | **Active** | `https://stooq.com/q/l/?s=<sym>.us&f=spd2t2ohlcv`. No auth. Delayed ~15 min. Derives `dayChange` from prevClose. No 52w high/low. |

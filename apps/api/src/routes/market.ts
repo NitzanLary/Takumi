@@ -33,8 +33,8 @@ router.get('/prices', async (req: Request, res: Response) => {
 /**
  * POST /api/market/refresh — force refresh all open position tickers + benchmarks.
  */
-router.post('/refresh', async (_req: Request, res: Response) => {
-  const positions = await getOpenPositions();
+router.post('/refresh', async (req: Request, res: Response) => {
+  const positions = await getOpenPositions(req.user!.id);
   const tickers = positions.map((p) => ({
     ticker: p.ticker,
     market: p.market,

@@ -17,15 +17,15 @@ router.get('/', async (req: Request, res: Response) => {
   const from = fromParam ? new Date(fromParam) : undefined;
   const to = toParam ? new Date(toParam) : undefined;
 
-  const snapshots = await getSnapshots(from, to);
+  const snapshots = await getSnapshots(req.user!.id, from, to);
   res.json(snapshots);
 });
 
 /**
  * POST /api/snapshots/capture — manually trigger today's snapshot.
  */
-router.post('/capture', async (_req: Request, res: Response) => {
-  const snapshot = await captureSnapshot();
+router.post('/capture', async (req: Request, res: Response) => {
+  const snapshot = await captureSnapshot(req.user!.id);
   res.json(snapshot);
 });
 

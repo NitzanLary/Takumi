@@ -2,7 +2,7 @@ import { prisma } from "../lib/db.js";
 import type { TradeFilters } from "@takumi/types";
 import { CORE_DIRECTIONS } from "@takumi/types";
 
-export async function getTrades(filters: TradeFilters) {
+export async function getTrades(userId: string, filters: TradeFilters) {
   const {
     ticker,
     market,
@@ -15,7 +15,7 @@ export async function getTrades(filters: TradeFilters) {
     includeNonTrades = false,
   } = filters;
 
-  const where: Record<string, unknown> = {};
+  const where: Record<string, unknown> = { userId };
   if (ticker) where.ticker = { contains: ticker };
   if (market) where.market = market;
   if (direction) {
@@ -50,9 +50,9 @@ export async function getTrades(filters: TradeFilters) {
   };
 }
 
-export async function getTradeByTicker(ticker: string) {
+export async function getTradeByTicker(userId: string, ticker: string) {
   const trades = await prisma.trade.findMany({
-    where: { ticker },
+    where: { userId, ticker },
     orderBy: { tradeDate: "asc" },
   });
   return trades.map(serializeTrade);

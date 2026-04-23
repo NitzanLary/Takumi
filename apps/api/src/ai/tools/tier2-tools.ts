@@ -11,7 +11,7 @@ import { getCurrentRate, getRate } from '../../services/exchange-rate.service.js
 import { getRiskMetrics } from '../../services/risk.service.js';
 import { prisma } from '../../lib/db.js';
 
-export type ToolExecutor = (input: Record<string, unknown>) => Promise<unknown>;
+import type { ToolExecutor } from './core-tools.js';
 
 // ─── Tool Schemas ───────────────────────────────────────────────
 
@@ -65,10 +65,13 @@ export const tier2ToolSchemas: Anthropic.Messages.Tool[] = [
 
 // ─── Tool Executors ─────────────────────────────────────────────
 
-async function execGetBenchmarkComparison(input: Record<string, unknown>): Promise<unknown> {
+async function execGetBenchmarkComparison(
+  userId: string,
+  input: Record<string, unknown>
+): Promise<unknown> {
   const [benchmarks, snapshots] = await Promise.all([
     getBenchmarks(),
-    getSnapshots(),
+    getSnapshots(userId),
   ]);
 
   if (snapshots.length < 2) {
@@ -93,7 +96,7 @@ async function execGetBenchmarkComparison(input: Record<string, unknown>): Promi
   if (input.ticker) {
     const ticker = input.ticker as string;
     const trades = await prisma.trade.findMany({
-      where: { ticker, direction: { in: ['BUY', 'SELL'] } },
+      where: { userId, ticker, direction: { in: ['BUY', 'SELL'] } },
       orderBy: { tradeDate: 'asc' },
     });
 
@@ -137,8 +140,11 @@ async function execGetBenchmarkComparison(input: Record<string, unknown>): Promi
   };
 }
 
-async function execGetCurrencyImpact(input: Record<string, unknown>): Promise<unknown> {
-  const positions = await getOpenPositions();
+async function execGetCurrencyImpact(
+  userId: string,
+  input: Record<string, unknown>
+): Promise<unknown> {
+  const positions = await getOpenPositions(userId);
   const usdPositions = positions.filter((p) => p.currency === 'USD');
 
   if (usdPositions.length === 0) {
@@ -154,7 +160,7 @@ async function execGetCurrencyImpact(input: Record<string, unknown>): Promise<un
     startDate = new Date(`${year}-01-01`);
   } else {
     const firstTrade = await prisma.trade.findFirst({
-      where: { currency: 'USD', direction: { in: ['BUY', 'SELL'] } },
+      where: { userId, currency: 'USD', direction: { in: ['BUY', 'SELL'] } },
       orderBy: { tradeDate: 'asc' },
     });
     startDate = firstTrade?.tradeDate || new Date();
@@ -196,8 +202,8 @@ async function execGetCurrencyImpact(input: Record<string, unknown>): Promise<un
   };
 }
 
-async function execGetRiskReport(): Promise<unknown> {
-  const metrics = await getRiskMetrics();
+async function execGetRiskReport(userId: string): Promise<unknown> {
+  const metrics = await getRiskMetrics(userId);
 
   // Build narrative
   const narratives: string[] = [];

@@ -14,8 +14,12 @@ export const config = {
   databaseUrl: process.env.DATABASE_URL || "",
   nodeEnv: process.env.NODE_ENV || "development",
   corsOrigin: process.env.CORS_ORIGIN || `http://localhost:${process.env.WEB_PORT || 3000}`,
-  basicAuth: {
-    user: process.env.BASIC_AUTH_USER || "",
-    pass: process.env.BASIC_AUTH_PASS || "",
+  email: {
+    resendApiKey: process.env.RESEND_API_KEY || "",
+    from: process.env.EMAIL_FROM || "Takumi <onboarding@resend.dev>",
   },
+  appUrl: process.env.APP_URL || `http://localhost:${process.env.WEB_PORT || 3000}`,
+  // Local-dev bypass: when set, requireAuth resolves this user instead of doing
+  // a session lookup. Useful for `pnpm dev` without spinning up the full auth flow.
+  authDevBypassUserId: process.env.AUTH_DEV_BYPASS_USER_ID || "",
 } as const;

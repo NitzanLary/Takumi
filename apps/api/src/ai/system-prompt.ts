@@ -6,13 +6,17 @@
 import { getPortfolioSummary } from '../services/pnl.service.js';
 import { getOpenPositions } from '../services/position.service.js';
 import { getSyncStatus } from '../services/sync.service.js';
+import { prisma } from '../lib/db.js';
 
-export async function buildSystemPrompt(): Promise<string> {
-  const [summary, positions, syncStatus] = await Promise.all([
-    getPortfolioSummary().catch(() => null),
-    getOpenPositions().catch(() => []),
-    getSyncStatus().catch(() => null),
+export async function buildSystemPrompt(userId: string): Promise<string> {
+  const [user, summary, positions, syncStatus] = await Promise.all([
+    prisma.user.findUnique({ where: { id: userId }, select: { displayName: true, email: true } }),
+    getPortfolioSummary(userId).catch(() => null),
+    getOpenPositions(userId).catch(() => []),
+    getSyncStatus(userId).catch(() => null),
   ]);
+
+  const userName = user?.displayName || user?.email?.split('@')[0] || 'you';
 
   const positionCount = positions.length;
   // ILS-normalized totals (home currency). Summing native marketValue across
@@ -51,9 +55,9 @@ ${top5.map((p) => `  ${p.ticker} (${p.market}) — ${p.quantity} shares @ ${p.cu
 - Records Added: ${syncStatus.recordsAdded}`;
   }
 
-  return `You are Takumi, a personal trading intelligence assistant for Nitzan — an independent investor who trades Israeli (TASE) and US (NYSE/NASDAQ) equities through IBI broker.
+  return `You are Takumi, a personal trading intelligence assistant for ${userName} — an independent investor who trades Israeli (TASE) and US (NYSE/NASDAQ) equities through IBI broker.
 
-You have full read access to Nitzan's trade history, current positions, and all portfolio analytics through your tools. Use tools to fetch data before answering — do not guess or hallucinate numbers.
+You have full read access to ${userName}'s trade history, current positions, and all portfolio analytics through your tools. Use tools to fetch data before answering — do not guess or hallucinate numbers.
 
 Today: ${now}
 

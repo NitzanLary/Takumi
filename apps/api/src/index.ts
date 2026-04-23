@@ -1,9 +1,10 @@
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
-import basicAuth from "express-basic-auth";
 import { config } from "./lib/config.js";
 import { errorHandler } from "./middleware/error-handler.js";
+import { requireAuth } from "./middleware/require-auth.js";
+import authRouter from "./routes/auth.js";
 import tradesRouter from "./routes/trades.js";
 import syncRouter from "./routes/sync.js";
 import positionsRouter from "./routes/positions.js";
@@ -25,21 +26,14 @@ app.use(helmet());
 app.use(cors({ origin: config.corsOrigin, credentials: true }));
 app.use(express.json());
 
-// Health check — always public (used by Railway for uptime checks)
+// Public — health check (Railway uptime), and the auth router itself.
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
+app.use("/api/auth", authRouter);
 
-// Basic auth for everything else, when credentials are configured
-if (config.basicAuth.user && config.basicAuth.pass) {
-  app.use(
-    basicAuth({
-      users: { [config.basicAuth.user]: config.basicAuth.pass },
-      challenge: true,
-      realm: "Takumi",
-    })
-  );
-}
+// All routes below require an authenticated session.
+app.use("/api", requireAuth);
 
 app.use("/api/trades", tradesRouter);
 app.use("/api/sync", syncRouter);

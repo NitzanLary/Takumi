@@ -66,29 +66,38 @@ function toNum(d: unknown): number {
   return Number(d);
 }
 
-// In-memory cache for FIFO results (1-minute TTL).
+// In-memory cache for FIFO results (1-minute TTL), keyed by userId.
 // Prevents redundant re-computation when multiple AI tools call runFifoMatching
-// within the same chat turn.
-let fifoCache: { matchedLots: MatchedLot[]; openLots: OpenLot[] } | null = null;
-let fifoCacheTime = 0;
+// within the same chat turn. Per-user keying is required — a single shared cache
+// would leak one user's FIFO results to another.
+const fifoCache = new Map<
+  string,
+  { result: { matchedLots: MatchedLot[]; openLots: OpenLot[] }; at: number }
+>();
 const FIFO_CACHE_TTL_MS = 60_000;
 
 /**
- * Run FIFO lot matching on all trades in the database.
+ * Run FIFO lot matching on all trades for a given user.
  * Returns matched (closed) lots and open (unmatched buy) lots.
- * Results are cached for 1 minute to avoid redundant computation.
+ * Results are cached per-user for 1 minute.
  */
-export async function runFifoMatching(): Promise<{
+export async function runFifoMatching(userId: string): Promise<{
   matchedLots: MatchedLot[];
   openLots: OpenLot[];
 }> {
   const now = Date.now();
-  if (fifoCache && now - fifoCacheTime < FIFO_CACHE_TTL_MS) {
-    return fifoCache;
+  const hit = fifoCache.get(userId);
+  if (hit && now - hit.at < FIFO_CACHE_TTL_MS) {
+    return hit.result;
+  }
+
+  // Opportunistic eviction of stale entries (older than 2× TTL).
+  for (const [k, v] of fifoCache) {
+    if (now - v.at > FIFO_CACHE_TTL_MS * 2) fifoCache.delete(k);
   }
 
   const trades = await prisma.trade.findMany({
-    where: { direction: { in: ['BUY', 'SELL', 'SPLIT'] } },
+    where: { userId, direction: { in: ['BUY', 'SELL', 'SPLIT'] } },
     orderBy: [{ tradeDate: 'asc' }, { createdAt: 'asc' }],
   });
 
@@ -198,8 +207,7 @@ export async function runFifoMatching(): Promise<{
   }
 
   const result = { matchedLots, openLots };
-  fifoCache = result;
-  fifoCacheTime = Date.now();
+  fifoCache.set(userId, { result, at: Date.now() });
   return result;
 }
 
@@ -207,16 +215,19 @@ export async function runFifoMatching(): Promise<{
  * Return the matched (closed) FIFO lots for a single ticker — one row per
  * completed buy→sell cycle. Empty if the ticker has no closed round-trips.
  */
-export async function getMatchedLotsForTicker(ticker: string): Promise<MatchedLot[]> {
-  const { matchedLots } = await runFifoMatching();
+export async function getMatchedLotsForTicker(
+  userId: string,
+  ticker: string
+): Promise<MatchedLot[]> {
+  const { matchedLots } = await runFifoMatching(userId);
   return matchedLots.filter((lot) => lot.ticker === ticker);
 }
 
 /**
  * Get realized P&L grouped by ticker.
  */
-export async function getPnlByTicker(): Promise<TickerPnl[]> {
-  const { matchedLots } = await runFifoMatching();
+export async function getPnlByTicker(userId: string): Promise<TickerPnl[]> {
+  const { matchedLots } = await runFifoMatching(userId);
 
   const byTicker = new Map<string, MatchedLot[]>();
   for (const lot of matchedLots) {
@@ -257,10 +268,12 @@ export async function getPnlByTicker(): Promise<TickerPnl[]> {
 /**
  * Get realized P&L grouped by month.
  */
-export async function getPnlByMonth(): Promise<
+export async function getPnlByMonth(
+  userId: string
+): Promise<
   { year: number; month: number; realizedPnl: number; tradeCount: number }[]
 > {
-  const { matchedLots } = await runFifoMatching();
+  const { matchedLots } = await runFifoMatching(userId);
 
   const byMonth = new Map<string, { pnl: number; count: number }>();
   for (const lot of matchedLots) {
@@ -303,6 +316,7 @@ function resolveWindowStart(window: PnlWindow): Date | null {
  * realized P&L using the current USD/ILS rate (TASE passes through 1:1).
  */
 export async function getPnlByMarket(
+  userId: string,
   window: PnlWindow = 'all'
 ): Promise<
   {
@@ -313,7 +327,7 @@ export async function getPnlByMarket(
     winRate: number;
   }[]
 > {
-  const { matchedLots } = await runFifoMatching();
+  const { matchedLots } = await runFifoMatching(userId);
 
   const start = resolveWindowStart(window);
   const filtered = start
@@ -364,7 +378,7 @@ export interface CurrencyPnl {
 /**
  * Get portfolio-level summary from FIFO matching.
  */
-export async function getPortfolioSummary(): Promise<{
+export async function getPortfolioSummary(userId: string): Promise<{
   totalRealizedPnl: number;
   pnlByCurrency: CurrencyPnl[];
   totalTrades: number;
@@ -372,7 +386,7 @@ export async function getPortfolioSummary(): Promise<{
   avgHoldingDays: number;
   avgReturn: number;
 }> {
-  const { matchedLots } = await runFifoMatching();
+  const { matchedLots } = await runFifoMatching(userId);
 
   const totalPnl = matchedLots.reduce((sum, l) => sum + l.realizedPnl, 0);
   const wins = matchedLots.filter((l) => l.realizedPnl > 0).length;

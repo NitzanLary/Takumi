@@ -35,12 +35,13 @@ function getClient(): Anthropic {
 
 // Tool schemas and executors are injected from the tool registry
 let toolSchemas: Anthropic.Messages.Tool[] = [];
-let executeToolFn: ((name: string, input: Record<string, unknown>) => Promise<unknown>) | null =
-  null;
+let executeToolFn:
+  | ((userId: string, name: string, input: Record<string, unknown>) => Promise<unknown>)
+  | null = null;
 
 export function registerTools(
   schemas: Anthropic.Messages.Tool[],
-  executor: (name: string, input: Record<string, unknown>) => Promise<unknown>
+  executor: (userId: string, name: string, input: Record<string, unknown>) => Promise<unknown>
 ) {
   toolSchemas = schemas;
   executeToolFn = executor;
@@ -120,6 +121,7 @@ function tryParseJson(s: string): unknown {
 export async function handleChatStream(
   req: Request,
   res: Response,
+  userId: string,
   userMessage: string,
   conversationId?: string
 ) {
@@ -135,12 +137,12 @@ export async function handleChatStream(
   try {
     const client = getClient();
 
-    // Load or create conversation
-    const conversation = await getOrCreateConversation(conversationId);
+    // Load or create conversation (scoped to user)
+    const conversation = await getOrCreateConversation(userId, conversationId);
     const isFirstMessage = conversation.isNew || conversation.messages.length === 0;
 
     // Build system prompt and message history
-    const [systemPrompt] = await Promise.all([buildSystemPrompt()]);
+    const [systemPrompt] = await Promise.all([buildSystemPrompt(userId)]);
 
     const historyMessages = buildMessageHistory(conversation.messages);
     historyMessages.push({ role: 'user', content: userMessage });
@@ -254,7 +256,7 @@ export async function handleChatStream(
         let result: unknown;
         try {
           if (executeToolFn) {
-            result = await executeToolFn(tc.name, tc.input);
+            result = await executeToolFn(userId, tc.name, tc.input);
           } else {
             result = { error: 'No tool executor registered' };
           }

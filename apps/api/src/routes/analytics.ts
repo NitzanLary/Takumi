@@ -14,10 +14,11 @@ const router = Router();
 /**
  * GET /api/analytics/summary — portfolio-level analytics including KPIs and behavioral stats.
  */
-router.get('/summary', async (_req: Request, res: Response) => {
+router.get('/summary', async (req: Request, res: Response) => {
+  const userId = req.user!.id;
   const [summary, totalTradeCount] = await Promise.all([
-    getAnalyticsSummary(),
-    getTotalTradeCount(),
+    getAnalyticsSummary(userId),
+    getTotalTradeCount(userId),
   ]);
   res.json({ ...summary, totalTradeCount });
 });
@@ -38,6 +39,7 @@ router.get('/pnl', async (req: Request, res: Response) => {
     return;
   }
   const data = await getPnlBreakdown(
+    req.user!.id,
     groupBy as 'ticker' | 'month' | 'market',
     windowRaw as PnlWindow
   );
@@ -47,8 +49,8 @@ router.get('/pnl', async (req: Request, res: Response) => {
 /**
  * GET /api/analytics/risk — portfolio risk metrics.
  */
-router.get('/risk', async (_req: Request, res: Response) => {
-  const metrics = await getRiskMetrics();
+router.get('/risk', async (req: Request, res: Response) => {
+  const metrics = await getRiskMetrics(req.user!.id);
   res.json(metrics);
 });
 

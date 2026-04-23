@@ -41,8 +41,8 @@ export interface OpenPosition {
  * Multiple open lots for the same ticker are merged into one position
  * with a weighted average cost basis. Enriched with live market prices.
  */
-export async function getOpenPositions(): Promise<OpenPosition[]> {
-  const { openLots } = await runFifoMatching();
+export async function getOpenPositions(userId: string): Promise<OpenPosition[]> {
+  const { openLots } = await runFifoMatching(userId);
 
   // Group open lots by ticker
   const byTicker = new Map<string, OpenLot[]>();
@@ -125,7 +125,10 @@ export async function getOpenPositions(): Promise<OpenPosition[]> {
  * Return the unsold FIFO buy lots for a single ticker.
  * Empty array if the ticker is fully closed (or never held).
  */
-export async function getOpenLotsForTicker(ticker: string): Promise<OpenLot[]> {
-  const { openLots } = await runFifoMatching();
+export async function getOpenLotsForTicker(
+  userId: string,
+  ticker: string
+): Promise<OpenLot[]> {
+  const { openLots } = await runFifoMatching(userId);
   return openLots.filter((lot) => lot.ticker === ticker);
 }

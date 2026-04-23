@@ -68,7 +68,7 @@ model VerificationToken {
 
 model Trade {
   id              String   @id @default(cuid())
-  userId          String?  @map("user_id")
+  userId          String   @map("user_id")
   tradeId         String   @map("trade_id")
   ticker          String
   securityName    String   @map("security_name")
@@ -88,9 +88,9 @@ model Trade {
   createdAt       DateTime @default(now()) @map("created_at")
   updatedAt       DateTime @updatedAt @map("updated_at")
 
-  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@unique([tradeId, source])
+  @@unique([userId, tradeId, source])
   @@index([userId, tradeDate])
   @@index([ticker])
   @@index([tradeDate])
@@ -118,7 +118,7 @@ model Security {
 
 model SyncLog {
   id           Int      @id @default(autoincrement())
-  userId       String?  @map("user_id")
+  userId       String   @map("user_id")
   syncedAt     DateTime @default(now()) @map("synced_at")
   status       String   // success | partial | failed
   recordsAdded Int      @default(0) @map("records_added")
@@ -127,7 +127,7 @@ model SyncLog {
   fileName     String?  @map("file_name")
   errorMessage String?  @map("error_message")
 
-  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, syncedAt(sort: Desc)])
   @@map("sync_log")
@@ -137,7 +137,7 @@ model SyncLog {
 
 model Alert {
   id          String    @id @default(cuid())
-  userId      String?   @map("user_id")
+  userId      String    @map("user_id")
   ticker      String?
   type        String    // price_drop | price_target | holding_duration | portfolio_pnl | sync_failure | inactivity
   threshold   Decimal
@@ -147,10 +147,9 @@ model Alert {
   createdAt   DateTime  @default(now()) @map("created_at")
   updatedAt   DateTime  @updatedAt @map("updated_at")
 
-  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, status])
-  @@index([status])
   @@map("alerts")
 }
 
@@ -186,8 +185,8 @@ model ExchangeRate {
 
 model PortfolioSnapshot {
   id             String   @id @default(cuid())
-  userId         String?  @map("user_id")
-  date           DateTime @unique
+  userId         String   @map("user_id")
+  date           DateTime
   totalValue     Decimal  @map("total_value")
   totalCostBasis Decimal  @map("total_cost_basis")
   unrealizedPnl  Decimal  @map("unrealized_pnl")
@@ -196,8 +195,9 @@ model PortfolioSnapshot {
   snapshotData   String?  @map("snapshot_data") // JSON string
   createdAt      DateTime @default(now()) @map("created_at")
 
-  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([userId, date])
   @@index([userId, date])
   @@map("portfolio_snapshots")
 }
@@ -206,13 +206,13 @@ model PortfolioSnapshot {
 
 model AiConversation {
   id        String      @id @default(cuid())
-  userId    String?     @map("user_id")
+  userId    String      @map("user_id")
   title     String?
   createdAt DateTime    @default(now()) @map("created_at")
   updatedAt DateTime    @updatedAt @map("updated_at")
   messages  AiMessage[]
 
-  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId, updatedAt])
   @@map("ai_conversations")
@@ -231,12 +231,3 @@ model AiMessage {
   @@map("ai_messages")
 }
 
-// ─── User Preferences (single-row, legacy — dropped in Commit B) ─
-
-model UserPreferences {
-  id              String @id @default("default")
-  currency        String @default("ILS") // ILS | USD
-  costBasisMethod String @default("FIFO") @map("cost_basis_method") // FIFO | LIFO | AVG
-
-  @@map("user_preferences")
-}

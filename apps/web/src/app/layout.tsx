@@ -1,10 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
-import { Sidebar } from "@/components/layout/Sidebar";
-import { TopBar } from "@/components/layout/TopBar";
 import { Providers } from "@/components/Providers";
-import { ChatDrawer } from "@/components/ai/ChatDrawer";
+import { AppShell } from "@/components/layout/AppShell";
 
 const inter = Inter({ subsets: ["latin"] });
 
@@ -27,14 +25,7 @@ export default function RootLayout({
     <html lang="en">
       <body className={inter.className}>
         <Providers>
-          <div className="flex h-screen overflow-hidden">
-            <Sidebar />
-            <div className="flex flex-1 flex-col overflow-hidden">
-              <TopBar />
-              <main className="flex-1 overflow-y-auto p-3 sm:p-6">{children}</main>
-            </div>
-            <ChatDrawer />
-          </div>
+          <AppShell>{children}</AppShell>
         </Providers>
       </body>
     </html>

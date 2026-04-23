@@ -18,10 +18,10 @@ const MIN_DATA_POINTS = 10;
 /**
  * Compute all risk metrics for the portfolio.
  */
-export async function getRiskMetrics(): Promise<RiskMetrics> {
+export async function getRiskMetrics(userId: string): Promise<RiskMetrics> {
   const [positions, snapshots] = await Promise.all([
-    getOpenPositions(),
-    getSnapshots(),
+    getOpenPositions(userId),
+    getSnapshots(userId),
   ]);
 
   const dataPoints = snapshots.length;

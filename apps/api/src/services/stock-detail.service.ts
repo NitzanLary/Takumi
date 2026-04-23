@@ -42,9 +42,12 @@ function toNum(d: unknown): number {
  * Build the full summary payload for one ticker. Works for open AND closed
  * positions — closed positions return position=null, isClosed=true.
  */
-export async function getStockSummary(ticker: string): Promise<StockSummary | null> {
+export async function getStockSummary(
+  userId: string,
+  ticker: string
+): Promise<StockSummary | null> {
   const trades = await prisma.trade.findMany({
-    where: { ticker },
+    where: { userId, ticker },
     orderBy: { tradeDate: 'asc' },
   });
   if (trades.length === 0) return null;
@@ -64,7 +67,7 @@ export async function getStockSummary(ticker: string): Promise<StockSummary | nu
   // Find current open position (if any) by filtering the full positions list.
   // getOpenPositions() runs FIFO matching once (cached 1min) and enriches with
   // live prices + ILS weights consistent with the rest of the app.
-  const positions = await getOpenPositions();
+  const positions = await getOpenPositions(userId);
   const openPosition = positions.find((p) => p.ticker === ticker) ?? null;
 
   const position: Position | null = openPosition
@@ -90,7 +93,7 @@ export async function getStockSummary(ticker: string): Promise<StockSummary | nu
     : null;
 
   // Realized P&L for this ticker
-  const matchedLots = await getMatchedLotsForTicker(ticker);
+  const matchedLots = await getMatchedLotsForTicker(userId, ticker);
   const realizedByCurrency = new Map<Currency, StockRealizedPnl>();
   for (const lot of matchedLots) {
     const cur = lot.currency as Currency;
@@ -158,7 +161,7 @@ export async function getStockSummary(ticker: string): Promise<StockSummary | nu
   // folded into price-move.
   let currencyImpact: StockCurrencyImpact | null = null;
   if (openPosition && currency === 'USD') {
-    const openLots = await getOpenLotsForTicker(ticker);
+    const openLots = await getOpenLotsForTicker(userId, ticker);
     let rateNow = 1;
     try {
       rateNow = await getCurrentRate();
@@ -214,8 +217,11 @@ export async function getStockSummary(ticker: string): Promise<StockSummary | nu
  * FIFO open lots for a ticker, enriched with current price for per-lot
  * unrealized P&L. Used by the Overview tab's "Open lots" table.
  */
-export async function getEnrichedOpenLots(ticker: string): Promise<StockOpenLot[]> {
-  const lots = await getOpenLotsForTicker(ticker);
+export async function getEnrichedOpenLots(
+  userId: string,
+  ticker: string
+): Promise<StockOpenLot[]> {
+  const lots = await getOpenLotsForTicker(userId, ticker);
   if (lots.length === 0) return [];
 
   const first = lots[0];
@@ -247,8 +253,11 @@ export async function getEnrichedOpenLots(ticker: string): Promise<StockOpenLot[
  * Completed round-trips (matched FIFO lots) for a ticker, mapped into the
  * shared API shape. Sorted newest-first by sell date.
  */
-export async function getRoundTripsForTicker(ticker: string): Promise<StockRoundTrip[]> {
-  const lots = await getMatchedLotsForTicker(ticker);
+export async function getRoundTripsForTicker(
+  userId: string,
+  ticker: string
+): Promise<StockRoundTrip[]> {
+  const lots = await getMatchedLotsForTicker(userId, ticker);
   return lots
     .map((lot) => {
       const grossReturn =

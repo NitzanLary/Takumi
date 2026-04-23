@@ -31,8 +31,8 @@ export interface WhatIfResult {
   }>;
 }
 
-export async function runWhatIf(input: WhatIfInput): Promise<WhatIfResult> {
-  const { matchedLots } = await runFifoMatching();
+export async function runWhatIf(userId: string, input: WhatIfInput): Promise<WhatIfResult> {
+  const { matchedLots } = await runFifoMatching(userId);
 
   switch (input.scenario) {
     case 'stop_loss':

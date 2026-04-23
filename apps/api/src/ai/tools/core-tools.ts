@@ -16,7 +16,10 @@ import { getSyncStatus, getSyncLog } from '../../services/sync.service.js';
 import { runWhatIf as runWhatIfService, type WhatIfInput } from '../../services/whatif.service.js';
 import { prisma } from '../../lib/db.js';
 
-export type ToolExecutor = (input: Record<string, unknown>) => Promise<unknown>;
+export type ToolExecutor = (
+  userId: string,
+  input: Record<string, unknown>
+) => Promise<unknown>;
 
 // ─── Tool Schemas ───────────────────────────────────────────────
 
@@ -234,10 +237,10 @@ export const coreToolSchemas: Anthropic.Messages.Tool[] = [
 
 // ─── Tool Executors ─────────────────────────────────────────────
 
-async function execGetPortfolioSummary(): Promise<unknown> {
+async function execGetPortfolioSummary(userId: string): Promise<unknown> {
   const [positions, summary] = await Promise.all([
-    getOpenPositions(),
-    getPortfolioSummary(),
+    getOpenPositions(userId),
+    getPortfolioSummary(userId),
   ]);
 
   return {
@@ -266,39 +269,48 @@ async function execGetPortfolioSummary(): Promise<unknown> {
   };
 }
 
-async function execQueryTrades(input: Record<string, unknown>): Promise<unknown> {
+async function execQueryTrades(
+  userId: string,
+  input: Record<string, unknown>
+): Promise<unknown> {
   const limit = Math.min(Number(input.limit) || 20, 100);
-  return getTrades({
+  return getTrades(userId, {
     ticker: input.ticker as string | undefined,
     dateFrom: input.dateFrom as string | undefined,
     dateTo: input.dateTo as string | undefined,
-    direction: input.direction as string | undefined,
-    market: input.market as string | undefined,
+    direction: input.direction as any,
+    market: input.market as any,
     includeNonTrades: (input.includeNonTrades as boolean) || false,
     limit,
     page: 1,
   });
 }
 
-async function execGetPnlBreakdown(input: Record<string, unknown>): Promise<unknown> {
+async function execGetPnlBreakdown(
+  userId: string,
+  input: Record<string, unknown>
+): Promise<unknown> {
   const groupBy = (input.groupBy as string) || 'ticker';
   switch (groupBy) {
     case 'ticker':
-      return getPnlByTicker();
+      return getPnlByTicker(userId);
     case 'month':
-      return getPnlByMonth();
+      return getPnlByMonth(userId);
     case 'market':
-      return getPnlByMarket();
+      return getPnlByMarket(userId);
     default:
-      return getPnlByTicker();
+      return getPnlByTicker(userId);
   }
 }
 
-async function execGetBehavioralReport(): Promise<unknown> {
-  return getAnalyticsSummary();
+async function execGetBehavioralReport(userId: string): Promise<unknown> {
+  return getAnalyticsSummary(userId);
 }
 
-async function execGetMarketPrice(input: Record<string, unknown>): Promise<unknown> {
+async function execGetMarketPrice(
+  _userId: string,
+  input: Record<string, unknown>
+): Promise<unknown> {
   const ticker = input.ticker as string;
   const market = (input.market as string) || 'NYSE';
   const currency = market === 'TASE' ? 'ILS' : 'USD';
@@ -323,10 +335,10 @@ async function execGetMarketPrice(input: Record<string, unknown>): Promise<unkno
   };
 }
 
-async function execGetSyncStatus(): Promise<unknown> {
+async function execGetSyncStatus(userId: string): Promise<unknown> {
   const [status, recentLogs] = await Promise.all([
-    getSyncStatus(),
-    getSyncLog(5),
+    getSyncStatus(userId),
+    getSyncLog(userId, 5),
   ]);
 
   return {
@@ -341,9 +353,13 @@ async function execGetSyncStatus(): Promise<unknown> {
   };
 }
 
-async function execCreateAlert(input: Record<string, unknown>): Promise<unknown> {
+async function execCreateAlert(
+  userId: string,
+  input: Record<string, unknown>
+): Promise<unknown> {
   const alert = await prisma.alert.create({
     data: {
+      userId,
       type: input.type as string,
       ticker: (input.ticker as string) || null,
       threshold: input.threshold as number,
@@ -363,8 +379,11 @@ async function execCreateAlert(input: Record<string, unknown>): Promise<unknown>
   };
 }
 
-async function execListAlerts(input: Record<string, unknown>): Promise<unknown> {
-  const where: Record<string, unknown> = {};
+async function execListAlerts(
+  userId: string,
+  input: Record<string, unknown>
+): Promise<unknown> {
+  const where: Record<string, unknown> = { userId };
   if (input.status) where.status = input.status;
   if (input.ticker) where.ticker = input.ticker;
 
@@ -385,14 +404,17 @@ async function execListAlerts(input: Record<string, unknown>): Promise<unknown> 
   }));
 }
 
-async function execDeleteAlert(input: Record<string, unknown>): Promise<unknown> {
+async function execDeleteAlert(
+  userId: string,
+  input: Record<string, unknown>
+): Promise<unknown> {
   const id = input.id as string;
-  try {
-    await prisma.alert.delete({ where: { id } });
-    return { success: true, message: `Alert ${id} deleted.` };
-  } catch {
+  // deleteMany so the alert is only removed if it belongs to this user.
+  const result = await prisma.alert.deleteMany({ where: { id, userId } });
+  if (result.count === 0) {
     return { error: `Alert with ID ${id} not found.` };
   }
+  return { success: true, message: `Alert ${id} deleted.` };
 }
 
 async function execTriggerSync(): Promise<unknown> {
@@ -402,8 +424,11 @@ async function execTriggerSync(): Promise<unknown> {
   };
 }
 
-async function execRunWhatIf(input: Record<string, unknown>): Promise<unknown> {
-  return runWhatIfService({
+async function execRunWhatIf(
+  userId: string,
+  input: Record<string, unknown>
+): Promise<unknown> {
+  return runWhatIfService(userId, {
     scenario: input.scenario as WhatIfInput['scenario'],
     ticker: input.ticker as string | undefined,
     stopLossPercent: input.stopLossPercent as number | undefined,

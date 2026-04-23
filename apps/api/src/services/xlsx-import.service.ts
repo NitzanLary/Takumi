@@ -232,7 +232,7 @@ function normalizeHeader(h: string): string {
     .trim();
 }
 
-export async function importXlsx(buffer: Buffer, fileName?: string): Promise<ImportResult> {
+export async function importXlsx(userId: string, buffer: Buffer, fileName?: string): Promise<ImportResult> {
   const workbook = XLSX.read(buffer, { type: "buffer" });
   const sheetName = workbook.SheetNames[0];
   const sheet = workbook.Sheets[sheetName];
@@ -325,7 +325,8 @@ export async function importXlsx(buffer: Buffer, fileName?: string): Promise<Imp
 
       await prisma.trade.upsert({
         where: {
-          tradeId_source: {
+          userId_tradeId_source: {
+            userId,
             tradeId,
             source: "xlsx_import",
           },
@@ -345,6 +346,7 @@ export async function importXlsx(buffer: Buffer, fileName?: string): Promise<Imp
           rawPayload: JSON.stringify(row),
         },
         create: {
+          userId,
           tradeId,
           ticker: parsed.ticker,
           securityName: parsed.securityName,
@@ -379,6 +381,7 @@ export async function importXlsx(buffer: Buffer, fileName?: string): Promise<Imp
 
   await prisma.syncLog.create({
     data: {
+      userId,
       status: errors.length === 0 ? "success" : skipped === rows.length ? "failed" : "partial",
       recordsAdded: imported,
       dateFrom,

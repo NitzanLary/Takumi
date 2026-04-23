@@ -17,7 +17,7 @@ router.get("/", async (req, res) => {
     includeNonTrades: req.query.includeNonTrades === "true",
   };
 
-  const result = await getTrades(filters);
+  const result = await getTrades(req.user!.id, filters);
   res.json(result);
 });
 

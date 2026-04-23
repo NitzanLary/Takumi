@@ -50,10 +50,10 @@ export interface MarketComparison {
 /**
  * Full analytics summary for dashboard and analytics page.
  */
-export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
-  const portfolio = await getPortfolioSummary();
-  const { matchedLots } = await runFifoMatching();
-  const positions = await getOpenPositions();
+export async function getAnalyticsSummary(userId: string): Promise<AnalyticsSummary> {
+  const portfolio = await getPortfolioSummary(userId);
+  const { matchedLots } = await runFifoMatching(userId);
+  const positions = await getOpenPositions(userId);
 
   const winners = matchedLots.filter((l) => l.realizedPnl > 0);
   const losers = matchedLots.filter((l) => l.realizedPnl <= 0);
@@ -103,26 +103,27 @@ export async function getAnalyticsSummary(): Promise<AnalyticsSummary> {
  * 'market' grouping; ticker and month views return lifetime data.
  */
 export async function getPnlBreakdown(
+  userId: string,
   groupBy: 'ticker' | 'month' | 'market',
   window: PnlWindow = 'all'
 ) {
   switch (groupBy) {
     case 'ticker':
-      return getPnlByTicker();
+      return getPnlByTicker(userId);
     case 'month':
-      return getPnlByMonth();
+      return getPnlByMonth(userId);
     case 'market':
-      return getPnlByMarket(window);
+      return getPnlByMarket(userId, window);
     default:
-      return getPnlByTicker();
+      return getPnlByTicker(userId);
   }
 }
 
 /**
- * Get total trade count from DB (includes both open and closed).
+ * Get total trade count from DB (includes both open and closed) for a user.
  */
-export async function getTotalTradeCount(): Promise<number> {
+export async function getTotalTradeCount(userId: string): Promise<number> {
   return prisma.trade.count({
-    where: { direction: { in: [...CORE_DIRECTIONS] } },
+    where: { userId, direction: { in: [...CORE_DIRECTIONS] } },
   });
 }

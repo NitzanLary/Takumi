@@ -23,9 +23,10 @@ const allExecutors: Map<string, ToolExecutor> = new Map([
 ]);
 
 /**
- * Execute a tool by name with the given input.
+ * Execute a tool by name with the given input, scoped to a userId.
  */
 export async function executeTool(
+  userId: string,
   name: string,
   input: Record<string, unknown>
 ): Promise<unknown> {
@@ -33,7 +34,7 @@ export async function executeTool(
   if (!executor) {
     return { error: `Unknown tool: ${name}` };
   }
-  return executor(input);
+  return executor(userId, input);
 }
 
 export { type ToolExecutor };

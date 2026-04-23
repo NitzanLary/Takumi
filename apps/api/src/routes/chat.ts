@@ -29,14 +29,14 @@ router.post('/', async (req, res) => {
     return;
   }
 
-  await handleChatStream(req, res, message.trim(), conversationId);
+  await handleChatStream(req, res, req.user!.id, message.trim(), conversationId);
 });
 
 /**
- * GET /api/chat/conversations — List all conversations.
+ * GET /api/chat/conversations — List all conversations for the current user.
  */
-router.get('/conversations', async (_req, res) => {
-  const conversations = await listConversations();
+router.get('/conversations', async (req, res) => {
+  const conversations = await listConversations(req.user!.id);
   res.json(conversations);
 });
 
@@ -44,7 +44,7 @@ router.get('/conversations', async (_req, res) => {
  * GET /api/chat/conversations/:id — Get a single conversation with messages.
  */
 router.get('/conversations/:id', async (req, res) => {
-  const conversation = await getConversation(req.params.id);
+  const conversation = await getConversation(req.user!.id, req.params.id);
   if (!conversation) {
     res.status(404).json({ error: 'Conversation not found' });
     return;
@@ -56,7 +56,7 @@ router.get('/conversations/:id', async (req, res) => {
  * DELETE /api/chat/conversations/:id — Delete a conversation.
  */
 router.delete('/conversations/:id', async (req, res) => {
-  const deleted = await deleteConversation(req.params.id);
+  const deleted = await deleteConversation(req.user!.id, req.params.id);
   if (!deleted) {
     res.status(404).json({ error: 'Conversation not found' });
     return;

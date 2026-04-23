@@ -19,7 +19,6 @@
     "cors": "^2",
     "dotenv": "^16",
     "express": "^5",
-    "express-basic-auth": "^1.2.1",
     "helmet": "^8",
     "multer": "^1",
     "tsx": "^4",

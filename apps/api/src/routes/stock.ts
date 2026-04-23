@@ -15,7 +15,7 @@ const router = Router();
  */
 router.get('/:ticker/summary', async (req: Request, res: Response) => {
   const ticker = String(req.params.ticker);
-  const summary = await getStockSummary(ticker);
+  const summary = await getStockSummary(req.user!.id, ticker);
   if (!summary) {
     res.status(404).json({ error: `No trades found for ticker ${ticker}` });
     return;
@@ -27,7 +27,7 @@ router.get('/:ticker/summary', async (req: Request, res: Response) => {
  * GET /api/stock/:ticker/open-lots — unsold FIFO buy lots, enriched with live price.
  */
 router.get('/:ticker/open-lots', async (req: Request, res: Response) => {
-  const lots = await getEnrichedOpenLots(String(req.params.ticker));
+  const lots = await getEnrichedOpenLots(req.user!.id, String(req.params.ticker));
   res.json(lots);
 });
 
@@ -35,7 +35,7 @@ router.get('/:ticker/open-lots', async (req: Request, res: Response) => {
  * GET /api/stock/:ticker/round-trips — completed buy→sell cycles.
  */
 router.get('/:ticker/round-trips', async (req: Request, res: Response) => {
-  const trips = await getRoundTripsForTicker(String(req.params.ticker));
+  const trips = await getRoundTripsForTicker(req.user!.id, String(req.params.ticker));
   res.json(trips);
 });
 
@@ -45,10 +45,11 @@ router.get('/:ticker/round-trips', async (req: Request, res: Response) => {
  */
 router.get('/:ticker/chart', async (req: Request, res: Response) => {
   const ticker = String(req.params.ticker);
+  const userId = req.user!.id;
 
-  // Resolve market/currency from an existing trade row.
+  // Resolve market/currency from an existing trade row (for this user only).
   const tradeRow = await prisma.trade.findFirst({
-    where: { ticker },
+    where: { userId, ticker },
     orderBy: { tradeDate: 'asc' },
   });
   if (!tradeRow) {
@@ -57,7 +58,7 @@ router.get('/:ticker/chart', async (req: Request, res: Response) => {
   }
 
   const firstBuy = await prisma.trade.findFirst({
-    where: { ticker, direction: 'BUY' },
+    where: { userId, ticker, direction: 'BUY' },
     orderBy: { tradeDate: 'asc' },
   });
   if (!firstBuy) {

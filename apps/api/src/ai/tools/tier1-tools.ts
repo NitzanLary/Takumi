@@ -11,7 +11,7 @@ import { createRequire } from 'module';
 
 const require = createRequire(import.meta.url);
 
-export type ToolExecutor = (input: Record<string, unknown>) => Promise<unknown>;
+import type { ToolExecutor } from './core-tools.js';
 
 // Load sector map
 let sectorMap: Record<string, { sector: string; industry: string }> = {};
@@ -132,8 +132,12 @@ export const tier1ToolSchemas: Anthropic.Messages.Tool[] = [
 
 // ─── Tool Executors ─────────────────────────────────────────────
 
-async function execGetDividendSummary(input: Record<string, unknown>): Promise<unknown> {
+async function execGetDividendSummary(
+  userId: string,
+  input: Record<string, unknown>
+): Promise<unknown> {
   const where: Record<string, unknown> = {
+    userId,
     direction: { in: ['DIVIDEND', 'TAX'] },
   };
 
@@ -193,8 +197,12 @@ async function execGetDividendSummary(input: Record<string, unknown>): Promise<u
   };
 }
 
-async function execGetCostAnalysis(input: Record<string, unknown>): Promise<unknown> {
+async function execGetCostAnalysis(
+  userId: string,
+  input: Record<string, unknown>
+): Promise<unknown> {
   const where: Record<string, unknown> = {
+    userId,
     direction: { in: ['BUY', 'SELL'] },
   };
 
@@ -231,7 +239,7 @@ async function execGetCostAnalysis(input: Record<string, unknown>): Promise<unkn
     }
   }
 
-  const { matchedLots } = await runFifoMatching();
+  const { matchedLots } = await runFifoMatching(userId);
   const totalRealizedGains = matchedLots
     .filter((l) => l.realizedPnl > 0)
     .reduce((s, l) => s + l.realizedPnl, 0);
@@ -248,10 +256,13 @@ async function execGetCostAnalysis(input: Record<string, unknown>): Promise<unkn
   };
 }
 
-async function execGetPerformanceTimeline(input: Record<string, unknown>): Promise<unknown> {
+async function execGetPerformanceTimeline(
+  userId: string,
+  input: Record<string, unknown>
+): Promise<unknown> {
   const period = (input.period as string) || 'monthly';
   const year = input.year as number | undefined;
-  const { matchedLots } = await runFifoMatching();
+  const { matchedLots } = await runFifoMatching(userId);
 
   const filteredLots = year
     ? matchedLots.filter((l) => l.sellDate.getFullYear() === year)
@@ -294,8 +305,8 @@ async function execGetPerformanceTimeline(input: Record<string, unknown>): Promi
   return { period, timeline };
 }
 
-async function execGetStreaks(): Promise<unknown> {
-  const { matchedLots } = await runFifoMatching();
+async function execGetStreaks(userId: string): Promise<unknown> {
+  const { matchedLots } = await runFifoMatching(userId);
 
   // Sort by sell date
   const sorted = [...matchedLots].sort(
@@ -369,8 +380,8 @@ async function execGetStreaks(): Promise<unknown> {
   };
 }
 
-async function execGetSectorExposure(): Promise<unknown> {
-  const positions = await getOpenPositions();
+async function execGetSectorExposure(userId: string): Promise<unknown> {
+  const positions = await getOpenPositions(userId);
 
   if (positions.length === 0) {
     return { message: 'No open positions to analyze.' };
@@ -410,7 +421,10 @@ async function execGetSectorExposure(): Promise<unknown> {
   return { sectors, warnings };
 }
 
-async function execGetSecurityInfo(input: Record<string, unknown>): Promise<unknown> {
+async function execGetSecurityInfo(
+  userId: string,
+  input: Record<string, unknown>
+): Promise<unknown> {
   const ticker = input.ticker as string;
 
   const security = await prisma.security.findUnique({
@@ -419,9 +433,9 @@ async function execGetSecurityInfo(input: Record<string, unknown>): Promise<unkn
 
   const mapping = sectorMap[ticker];
 
-  // Also get trade summary for this ticker
+  // Also get trade summary for this ticker (scoped to this user)
   const tradeCount = await prisma.trade.count({
-    where: { ticker, direction: { in: ['BUY', 'SELL'] } },
+    where: { userId, ticker, direction: { in: ['BUY', 'SELL'] } },
   });
 
   return {
@@ -437,8 +451,8 @@ async function execGetSecurityInfo(input: Record<string, unknown>): Promise<unkn
   };
 }
 
-async function execGetHoldingPeriodAnalysis(): Promise<unknown> {
-  const { matchedLots } = await runFifoMatching();
+async function execGetHoldingPeriodAnalysis(userId: string): Promise<unknown> {
+  const { matchedLots } = await runFifoMatching(userId);
 
   if (matchedLots.length === 0) {
     return { message: 'No closed trades found for holding period analysis.' };

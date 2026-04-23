@@ -15,21 +15,21 @@ import type { PortfolioSnapshotData } from '@takumi/types';
  * Capture a portfolio snapshot for today.
  * Uses live market prices via position.service.
  */
-export async function captureSnapshot(): Promise<PortfolioSnapshotData> {
+export async function captureSnapshot(userId: string): Promise<PortfolioSnapshotData> {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  // Check if we already have a snapshot for today
+  // Check if we already have a snapshot for today (per-user)
   const existing = await prisma.portfolioSnapshot.findUnique({
-    where: { date: today },
+    where: { userId_date: { userId, date: today } },
   });
   if (existing) {
     return mapSnapshot(existing);
   }
 
   const [positions, summary] = await Promise.all([
-    getOpenPositions(),
-    getPortfolioSummary(),
+    getOpenPositions(userId),
+    getPortfolioSummary(userId),
   ]);
 
   // Totals are stored in ILS (home currency) so the equity curve is coherent
@@ -41,6 +41,7 @@ export async function captureSnapshot(): Promise<PortfolioSnapshotData> {
 
   const snapshot = await prisma.portfolioSnapshot.create({
     data: {
+      userId,
       date: today,
       totalValue,
       totalCostBasis,
@@ -72,10 +73,11 @@ export async function captureSnapshot(): Promise<PortfolioSnapshotData> {
  * Used for rendering the equity curve chart.
  */
 export async function getSnapshots(
+  userId: string,
   from?: Date,
   to?: Date
 ): Promise<PortfolioSnapshotData[]> {
-  const where: Record<string, unknown> = {};
+  const where: Record<string, unknown> = { userId };
   if (from || to) {
     where.date = {};
     if (from) (where.date as Record<string, Date>).gte = from;
@@ -91,10 +93,13 @@ export async function getSnapshots(
 }
 
 /**
- * Get the latest snapshot.
+ * Get the latest snapshot for a user.
  */
-export async function getLatestSnapshot(): Promise<PortfolioSnapshotData | null> {
+export async function getLatestSnapshot(
+  userId: string
+): Promise<PortfolioSnapshotData | null> {
   const snapshot = await prisma.portfolioSnapshot.findFirst({
+    where: { userId },
     orderBy: { date: 'desc' },
   });
   return snapshot ? mapSnapshot(snapshot) : null;
@@ -104,7 +109,7 @@ export async function getLatestSnapshot(): Promise<PortfolioSnapshotData | null>
  * Auto-capture if past 17:00 IST and no snapshot for today.
  * Call this from API endpoints (positions, analytics) as a side effect.
  */
-export async function maybeCaptureDaily(): Promise<void> {
+export async function maybeCaptureDaily(userId: string): Promise<void> {
   const now = new Date();
   // Convert to IST (UTC+2/+3). Israel is UTC+2 in winter, UTC+3 in summer.
   // We'll use a simple check: if it's past 15:00 UTC (which is 17:00 IST or 18:00 IDT)
@@ -114,13 +119,13 @@ export async function maybeCaptureDaily(): Promise<void> {
   today.setHours(0, 0, 0, 0);
 
   const existing = await prisma.portfolioSnapshot.findUnique({
-    where: { date: today },
+    where: { userId_date: { userId, date: today } },
   });
   if (existing) return;
 
   try {
-    await captureSnapshot();
-    console.log('[snapshot] Auto-captured daily snapshot');
+    await captureSnapshot(userId);
+    console.log(`[snapshot] Auto-captured daily snapshot for user=${userId}`);
   } catch (err) {
     console.error('[snapshot] Auto-capture failed:', err);
   }
