@@ -49,14 +49,11 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
 
   const session = await prisma.session.findUnique({
     where: { tokenHash: hashSessionToken(raw) },
-    include: { user: { select: { id: true, email: true, emailVerifiedAt: true } } },
+    include: { user: { select: { id: true, email: true } } },
   });
 
   if (!session || session.expiresAt < new Date()) {
     return res.status(401).json({ error: 'Session expired' });
-  }
-  if (!session.user.emailVerifiedAt) {
-    return res.status(403).json({ error: 'Email not verified' });
   }
 
   // Rolling refresh — bump session expiry if it's been more than a day since

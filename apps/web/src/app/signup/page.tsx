@@ -1,17 +1,20 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { apiFetch } from "@/lib/api-client";
+import { useCurrentUser } from "@/components/UserProvider";
 import { AuthCard, inputClass, primaryButtonClass } from "@/components/auth/AuthCard";
 
 export default function SignupPage() {
+  const router = useRouter();
+  const { refresh } = useCurrentUser();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState(false);
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -22,28 +25,12 @@ export default function SignupPage() {
         method: "POST",
         body: JSON.stringify({ email, password, displayName: displayName || undefined }),
       });
-      setDone(true);
+      await refresh();
+      router.push("/dashboard");
     } catch (err) {
       setError((err as Error).message || "Sign up failed");
-    } finally {
       setLoading(false);
     }
-  }
-
-  if (done) {
-    return (
-      <AuthCard title="Check your email" subtitle={`We sent a verification link to ${email}.`}>
-        <p className="text-sm text-gray-600">
-          Click the link in the email to activate your account. The link expires in 24 hours.
-        </p>
-        <p className="mt-4 text-sm text-gray-600">
-          Already verified?{" "}
-          <Link href="/login" className="text-teal-700 hover:underline">
-            Sign in
-          </Link>
-        </p>
-      </AuthCard>
-    );
   }
 
   return (

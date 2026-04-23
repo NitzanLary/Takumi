@@ -88,33 +88,31 @@ router.post('/signup', async (req, res) => {
     return res.status(409).json({ error: 'An account with this email already exists' });
   }
 
+  // Email verification is temporarily disabled (no verified Resend domain yet),
+  // so new users are auto-verified and logged in directly.
   const passwordHash = await bcrypt.hash(parsed.data.password, BCRYPT_COST);
   const user = await prisma.user.create({
     data: {
       email,
       passwordHash,
       displayName: parsed.data.displayName?.trim() || null,
+      emailVerifiedAt: new Date(),
     },
   });
 
-  // Issue verification token
   const token = genToken();
-  await prisma.verificationToken.create({
+  await prisma.session.create({
     data: {
       userId: user.id,
       tokenHash: hashSessionToken(token),
-      purpose: 'email_verify',
-      expiresAt: new Date(Date.now() + EMAIL_VERIFY_DURATION_MS),
+      expiresAt: new Date(Date.now() + SESSION_DURATION_MS),
+      userAgent: (req.headers['user-agent'] as string | undefined)?.slice(0, 200) ?? null,
+      ipAddress: (req.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ?? req.ip ?? null,
     },
   });
 
-  try {
-    await sendVerificationEmail(user.email, token);
-  } catch (err) {
-    console.error('[auth/signup] Failed to send verification email:', err);
-  }
-
-  res.json({ message: 'Verification email sent. Please check your inbox.' });
+  setSessionCookie(res, token);
+  res.json({ user: publicUser(user) });
 });
 
 // ─── Login ───────────────────────────────────────────────────────
@@ -136,9 +134,6 @@ router.post('/login', async (req, res) => {
   const ok = user ? await bcrypt.compare(parsed.data.password, user.passwordHash) : false;
   if (!user || !ok) {
     return res.status(401).json({ error: 'Invalid email or password' });
-  }
-  if (!user.emailVerifiedAt) {
-    return res.status(403).json({ error: 'Please verify your email address before logging in' });
   }
 
   const token = genToken();

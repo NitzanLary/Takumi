@@ -20,7 +20,7 @@ Browser  →  Next.js web (session cookie gate)  →  rewrites /api/*  →  Expr
 
 - **Frontend** calls relative `/api/*` URLs. Next.js rewrites them server-side to the API service (via `API_URL` env var). The browser never sees the API origin directly. `src/middleware.ts` redirects unauthenticated requests to `/login` (checked via presence of `takumi_session` cookie).
 - **Express** is the single gateway. All routes except `/api/health` and `/api/auth/*` require a valid session (enforced by `requireAuth` middleware). `req.user.id` is set on every authenticated request — services accept `userId` as their first argument and every Prisma query scopes by it.
-- **Auth** — email + password with email verification. Passwords hashed with bcrypt (cost 12). Session tokens are 32-byte random strings, stored as SHA-256 hashes in the `sessions` table. Cookie is httpOnly, Secure (prod), SameSite=Lax, 30-day rolling expiry. Verification + password-reset tokens live in `verification_tokens`.
+- **Auth** — email + password. Passwords hashed with bcrypt (cost 12). Session tokens are 32-byte random strings, stored as SHA-256 hashes in the `sessions` table. Cookie is httpOnly, Secure (prod), SameSite=Lax, 30-day rolling expiry. Verification + password-reset tokens live in `verification_tokens`. **Email verification is currently disabled** (no verified Resend sending domain yet — see "External Services"): signup auto-sets `emailVerifiedAt`, creates a session and logs the user in directly; login and `requireAuth` no longer gate on verification. The verify/reset-password endpoints and pages are still in the codebase and will work again once a domain is verified and `EMAIL_FROM` is pointed at it — the "Forgot?" link on the login page has been hidden in the meantime.
 - **Data import** — XLSX files exported from IBI are uploaded via the `/import` page and parsed by `xlsx-import.service.ts`.
 - **Database** — Prisma schema is PostgreSQL. Dev and prod both use Postgres (Railway for prod).
 
@@ -122,8 +122,8 @@ All routes except `/api/health` and `/api/auth/*` require a valid session cookie
 | Method | Route | Handler | Purpose |
 |---|---|---|---|
 | GET | `/api/health` | inline | Health check (public) |
-| POST | `/api/auth/signup` | auth.ts | Create account (email+password+optional displayName); sends verification email |
-| POST | `/api/auth/login` | auth.ts | Exchange email+password for session cookie. Rejects unverified emails. |
+| POST | `/api/auth/signup` | auth.ts | Create account (email+password+optional displayName). Auto-verifies + issues a session cookie (email verification currently disabled). |
+| POST | `/api/auth/login` | auth.ts | Exchange email+password for session cookie. |
 | POST | `/api/auth/logout` | auth.ts | Delete session row and clear cookie |
 | GET | `/api/auth/me` | auth.ts | Current user (used by UserProvider to bootstrap) |
 | POST | `/api/auth/verify-email` | auth.ts | Consume verification token |
