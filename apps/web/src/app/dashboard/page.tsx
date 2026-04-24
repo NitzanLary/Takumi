@@ -1,11 +1,10 @@
 "use client";
 
-import { useMemo, useCallback, Suspense } from "react";
+import { useMemo } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useSearchParams, useRouter, usePathname } from "next/navigation";
 import { apiFetch } from "@/lib/api-client";
 import { formatNumber } from "@/lib/formatters";
-import type { PnlWindow, SyncState } from "@takumi/types";
+import type { SyncState } from "@takumi/types";
 import {
   LineChart,
   Line,
@@ -15,7 +14,6 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
-import { WindowToggle } from "@/components/dashboard/WindowToggle";
 import { PortfolioTotalCard } from "@/components/dashboard/PortfolioTotalCard";
 import {
   MarketCard,
@@ -58,45 +56,14 @@ interface MarketPnlRow {
   winRate: number;
 }
 
-const WINDOWS: readonly PnlWindow[] = ["all", "ytd", "12m"];
 const REGIONS: readonly MarketRegion[] = ["TASE", "US"];
 
 function regionFor(market: string): MarketRegion {
   return market === "TASE" ? "TASE" : "US";
 }
 
-function parseWindow(raw: string | null): PnlWindow {
-  return raw && (WINDOWS as readonly string[]).includes(raw)
-    ? (raw as PnlWindow)
-    : "all";
-}
-
 export default function DashboardPage() {
-  return (
-    <Suspense fallback={<div className="p-2 text-sm text-gray-400">Loading…</div>}>
-      <DashboardInner />
-    </Suspense>
-  );
-}
-
-function DashboardInner() {
-  const searchParams = useSearchParams();
-  const router = useRouter();
-  const pathname = usePathname();
   const queryClient = useQueryClient();
-
-  const pnlWindow: PnlWindow = parseWindow(searchParams.get("window"));
-
-  const setWindow = useCallback(
-    (next: PnlWindow) => {
-      const params = new URLSearchParams(searchParams.toString());
-      if (next === "all") params.delete("window");
-      else params.set("window", next);
-      const qs = params.toString();
-      router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
-    },
-    [searchParams, router, pathname]
-  );
 
   const { data: syncStatus } = useQuery({
     queryKey: ["sync-status"],
@@ -111,11 +78,9 @@ function DashboardInner() {
   });
 
   const { data: pnlByMarket, isLoading: pnlLoading } = useQuery({
-    queryKey: ["pnl-by-market", pnlWindow],
+    queryKey: ["pnl-by-market"],
     queryFn: () =>
-      apiFetch<MarketPnlRow[]>(
-        `/api/analytics/pnl?groupBy=market&window=${pnlWindow}`
-      ),
+      apiFetch<MarketPnlRow[]>("/api/analytics/pnl?groupBy=market"),
   });
 
   const { data: snapshots } = useQuery({
@@ -166,12 +131,6 @@ function DashboardInner() {
               USD/ILS {rate.toFixed(3)} · {new Date(fx.date).toLocaleDateString()}
             </p>
           )}
-        </div>
-        <div className="flex flex-col items-end gap-1">
-          <WindowToggle value={pnlWindow} onChange={setWindow} />
-          <p className="text-xs text-gray-400">
-            Window applies to Realized &amp; Total P&amp;L only.
-          </p>
         </div>
       </div>
 
