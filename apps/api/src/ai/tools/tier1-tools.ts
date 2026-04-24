@@ -161,11 +161,15 @@ async function execGetDividendSummary(
     return { message: 'No dividend or tax transactions found for the given filters.', transactions: [] };
   }
 
-  // Aggregate by ticker
+  // Aggregate by ticker. For DIVIDEND/TAX rows, IBI puts the USD cash amount
+  // in both `proceedsFx` and `quantity`, and the USD/ILS FX rate in `price` —
+  // so the amount is `proceedsFx` itself, not `price * quantity`.
   const byTicker = new Map<string, { dividends: number; taxes: number; count: number }>();
   for (const t of transactions) {
     const entry = byTicker.get(t.ticker) || { dividends: 0, taxes: 0, count: 0 };
-    const amount = Math.abs(Number(t.proceedsFx ?? t.price) * Number(t.quantity));
+    const amount = t.proceedsFx != null
+      ? Math.abs(Number(t.proceedsFx))
+      : Math.abs(Number(t.price) * Number(t.quantity));
 
     if (t.direction === 'DIVIDEND') {
       entry.dividends += amount;

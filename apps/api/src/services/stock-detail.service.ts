@@ -145,6 +145,11 @@ export async function getStockSummary(
   const dividendRows = trades.filter((t) => t.direction === 'DIVIDEND');
   const taxRows = trades.filter((t) => t.direction === 'TAX');
   const divByCurrency = new Map<Currency, StockDividendSummary>();
+  // IBI dividend/tax rows carry the cash amount in `proceedsFx` (USD) — `price`
+  // is the USD/ILS FX rate that day, not a per-share price, so `price * quantity`
+  // would yield an ILS figure stored against a USD key.
+  const cashAmount = (t: { proceedsFx: unknown; price: unknown; quantity: unknown }) =>
+    t.proceedsFx != null ? toNum(t.proceedsFx) : toNum(t.price) * toNum(t.quantity);
   for (const d of dividendRows) {
     const cur = d.currency as Currency;
     const entry = divByCurrency.get(cur) ?? {
@@ -154,7 +159,7 @@ export async function getStockSummary(
       net: 0,
       paymentCount: 0,
     };
-    entry.gross += toNum(d.price) * toNum(d.quantity);
+    entry.gross += Math.abs(cashAmount(d));
     entry.paymentCount += 1;
     divByCurrency.set(cur, entry);
   }
@@ -162,7 +167,7 @@ export async function getStockSummary(
     const cur = tax.currency as Currency;
     const entry = divByCurrency.get(cur);
     if (!entry) continue;
-    entry.taxWithheld += Math.abs(toNum(tax.price) * toNum(tax.quantity));
+    entry.taxWithheld += Math.abs(cashAmount(tax));
   }
   for (const e of divByCurrency.values()) {
     e.net = e.gross - e.taxWithheld;
