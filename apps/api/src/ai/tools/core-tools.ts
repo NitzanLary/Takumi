@@ -27,7 +27,7 @@ export const coreToolSchemas: Anthropic.Messages.Tool[] = [
   {
     name: 'get_portfolio_summary',
     description:
-      'Get current open positions with live market prices, total portfolio value, unrealized P&L, and realized P&L summary. Use this when the user asks about their portfolio, positions, current holdings, or portfolio value.',
+      'Get current open positions with live market prices, total portfolio value, unrealized P&L, and realized P&L summary. Use this when the user asks about their portfolio, positions, current holdings, or portfolio value. Each position returns: ticker, quantity, currency, currentPrice (native), marketValueIls, unrealizedPnlIls, unrealizedPnlPct, weight.',
     input_schema: {
       type: 'object' as const,
       properties: {},
@@ -37,7 +37,7 @@ export const coreToolSchemas: Anthropic.Messages.Tool[] = [
   {
     name: 'query_trades',
     description:
-      'Search and filter trade history. Returns paginated trade records. Use this when the user asks about specific trades, trade history, or wants to look up transactions by ticker, date, market, or direction.',
+      'Search and filter trade history. Returns paginated trade records. Use this when the user asks about specific trades, trade history, or wants to look up transactions by ticker, date, market, or direction. Each row returns: ticker, direction, quantity, price, currency, commission, tradeDate (YYYY-MM-DD). All trades come from IBI XLSX imports.',
     input_schema: {
       type: 'object' as const,
       properties: {
@@ -246,21 +246,13 @@ async function execGetPortfolioSummary(userId: string): Promise<unknown> {
   return {
     positions: positions.map((p) => ({
       ticker: p.ticker,
-      securityName: p.securityName,
-      market: p.market,
-      currency: p.currency,
       quantity: p.quantity,
-      avgCostBasis: p.avgCostBasis,
+      currency: p.currency,
       currentPrice: p.currentPrice,
-      marketValue: p.marketValue,
       marketValueIls: p.marketValueIls,
-      unrealizedPnl: p.unrealizedPnl,
       unrealizedPnlIls: p.unrealizedPnlIls,
       unrealizedPnlPct: p.unrealizedPnlPct,
       weight: p.weight,
-      dayChange: p.dayChange,
-      dayChangePct: p.dayChangePct,
-      priceSource: p.priceSource,
     })),
     totalPortfolioValueIls: positions.reduce((s, p) => s + p.marketValueIls, 0),
     totalUnrealizedPnlIls: positions.reduce((s, p) => s + p.unrealizedPnlIls, 0),
@@ -274,7 +266,7 @@ async function execQueryTrades(
   input: Record<string, unknown>
 ): Promise<unknown> {
   const limit = Math.min(Number(input.limit) || 20, 100);
-  return getTrades(userId, {
+  const result = await getTrades(userId, {
     ticker: input.ticker as string | undefined,
     dateFrom: input.dateFrom as string | undefined,
     dateTo: input.dateTo as string | undefined,
@@ -284,6 +276,22 @@ async function execQueryTrades(
     limit,
     page: 1,
   });
+  return {
+    trades: result.data.map((t) => {
+      const row = t as unknown as Record<string, unknown>;
+      return {
+        ticker: row.ticker,
+        direction: row.direction,
+        quantity: t.quantity,
+        price: t.price,
+        currency: row.currency,
+        commission: t.commission,
+        tradeDate: new Date(row.tradeDate as Date | string).toISOString().slice(0, 10),
+      };
+    }),
+    total: result.total,
+    returned: result.data.length,
+  };
 }
 
 async function execGetPnlBreakdown(

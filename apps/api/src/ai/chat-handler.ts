@@ -33,7 +33,9 @@ function getClient(): Anthropic {
   return anthropicClient;
 }
 
-// Tool schemas and executors are injected from the tool registry
+// Tool schemas and executors are injected from the tool registry.
+// Schemas are pre-wrapped with `cache_control: ephemeral` on the last entry
+// so Anthropic caches the full 21-tool definition block across calls.
 let toolSchemas: Anthropic.Messages.Tool[] = [];
 let executeToolFn:
   | ((userId: string, name: string, input: Record<string, unknown>) => Promise<unknown>)
@@ -43,7 +45,15 @@ export function registerTools(
   schemas: Anthropic.Messages.Tool[],
   executor: (userId: string, name: string, input: Record<string, unknown>) => Promise<unknown>
 ) {
-  toolSchemas = schemas;
+  if (schemas.length > 0) {
+    const last = schemas[schemas.length - 1];
+    toolSchemas = [
+      ...schemas.slice(0, -1),
+      { ...last, cache_control: { type: 'ephemeral' } },
+    ];
+  } else {
+    toolSchemas = [];
+  }
   executeToolFn = executor;
 }
 
@@ -141,8 +151,14 @@ export async function handleChatStream(
     const conversation = await getOrCreateConversation(userId, conversationId);
     const isFirstMessage = conversation.isNew || conversation.messages.length === 0;
 
-    // Build system prompt and message history
-    const [systemPrompt] = await Promise.all([buildSystemPrompt(userId)]);
+    // Build system prompt and message history. The static block is marked
+    // cacheable so Anthropic's prompt cache reuses it across the agentic
+    // loop's tool-calling iterations and follow-up turns (5-min TTL).
+    const systemParts = await buildSystemPrompt(userId);
+    const systemBlocks: Anthropic.Messages.TextBlockParam[] = [
+      { type: 'text', text: systemParts.static, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: systemParts.dynamic },
+    ];
 
     const historyMessages = buildMessageHistory(conversation.messages);
     historyMessages.push({ role: 'user', content: userMessage });
@@ -161,7 +177,7 @@ export async function handleChatStream(
       const stream = client.messages.stream({
         model: MODEL,
         max_tokens: MAX_TOKENS,
-        system: systemPrompt,
+        system: systemBlocks,
         messages: currentMessages,
         ...(toolSchemas.length > 0 ? { tools: toolSchemas } : {}),
       });
@@ -249,29 +265,34 @@ export async function handleChatStream(
       }
       currentMessages.push({ role: 'assistant', content: assistantContent });
 
-      // Execute each tool and build tool result messages
-      const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
-      for (const tc of toolCalls) {
-        toolCallCount++;
-        let result: unknown;
-        try {
-          if (executeToolFn) {
-            result = await executeToolFn(userId, tc.name, tc.input);
-          } else {
-            result = { error: 'No tool executor registered' };
+      // Execute all tool calls concurrently. Anthropic expects the
+      // tool_result blocks back in the same order as the assistant's
+      // tool_use blocks, which Promise.all preserves.
+      toolCallCount += toolCalls.length;
+      const executed = await Promise.all(
+        toolCalls.map(async (tc) => {
+          let result: unknown;
+          try {
+            if (executeToolFn) {
+              result = await executeToolFn(userId, tc.name, tc.input);
+            } else {
+              result = { error: 'No tool executor registered' };
+            }
+          } catch (err) {
+            result = { error: `Tool execution failed: ${(err as Error).message}` };
           }
-        } catch (err) {
-          result = { error: `Tool execution failed: ${(err as Error).message}` };
-        }
+          return { tc, result };
+        })
+      );
 
-        const resultStr = JSON.stringify(result);
+      const toolResults: Anthropic.Messages.ToolResultBlockParam[] = [];
+      for (const { tc, result } of executed) {
         toolResults.push({
           type: 'tool_result',
           tool_use_id: tc.id,
-          content: resultStr,
+          content: JSON.stringify(result),
         });
 
-        // Save tool result message
         newMessages.push({
           role: 'tool',
           content: JSON.stringify({ tool_use_id: tc.id, name: tc.name, result }),

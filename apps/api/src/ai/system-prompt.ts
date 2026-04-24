@@ -1,6 +1,7 @@
 /**
- * System Prompt Builder — constructs the dynamic system prompt for Claude
- * with lightweight portfolio context injected on every request.
+ * System Prompt Builder — returns a static prefix (cacheable) and a dynamic
+ * suffix (per-request). The handler concatenates them via Anthropic's
+ * multi-block `system` parameter with `cache_control` on the static block.
  */
 
 import { getPortfolioSummary } from '../services/pnl.service.js';
@@ -32,7 +33,29 @@ function inferredHorizonLabel(avgDays: number | null | undefined): string | null
   return 'long-term (1+ years)';
 }
 
-export async function buildSystemPrompt(userId: string): Promise<string> {
+// Static role + guidelines. No interpolations — this string is identical
+// across users and requests so Anthropic's prompt cache can reuse it.
+const STATIC_SYSTEM_PROMPT = `You are Takumi, a personal trading intelligence assistant for an independent investor who trades Israeli (TASE) and US (NYSE/NASDAQ) equities through IBI broker.
+
+You have full read access to the user's trade history, current positions, and all portfolio analytics through your tools. Use tools to fetch data before answering — do not guess or hallucinate numbers.
+
+GUIDELINES:
+- Be direct, data-driven, and conversational. Lead with the answer, then explain.
+- Always use tools to look up data before answering questions. Never fabricate numbers.
+- When you need multiple independent pieces of data to answer a question, request all the relevant tools in a single response rather than one at a time. Tools execute in parallel, so batching saves a round-trip.
+- Format currencies correctly: ₪ for ILS, $ for USD. Never mix currencies in a single amount.
+- TASE securities use Hebrew names — include them as-is when referencing TASE stocks.
+- For any trade recommendations or suggestions: always add "⚠ This is not financial advice."
+- When presenting tables or lists, use markdown formatting.
+- If a tool returns an error, acknowledge it and suggest alternatives.
+- Keep responses concise but thorough. Use bullet points and tables for clarity.`;
+
+export interface SystemPromptParts {
+  static: string;
+  dynamic: string;
+}
+
+export async function buildSystemPrompt(userId: string): Promise<SystemPromptParts> {
   const [user, summary, positions, syncStatus] = await Promise.all([
     prisma.user.findUnique({
       where: { id: userId },
@@ -49,11 +72,9 @@ export async function buildSystemPrompt(userId: string): Promise<string> {
     getSyncStatus(userId).catch(() => null),
   ]);
 
-  const userName = user?.displayName || user?.email?.split('@')[0] || 'you';
+  const userName = user?.displayName || user?.email?.split('@')[0] || 'the user';
 
   const positionCount = positions.length;
-  // ILS-normalized totals (home currency). Summing native marketValue across
-  // TASE (ILS) and US (USD) positions gives garbage numbers.
   const totalValueIls = positions.reduce((s, p) => s + p.marketValueIls, 0);
   const totalUnrealizedPnlIls = positions.reduce((s, p) => s + p.unrealizedPnlIls, 0);
   const top5 = positions.slice(0, 5);
@@ -104,12 +125,10 @@ ${top5.map((p) => `  ${p.ticker} (${p.market}) — ${p.quantity} shares @ ${p.cu
   }
 
   const profileGuideline = hasDeclaredProfile
-    ? `- Tailor framing to ${userName}'s declared horizon and goal. A long-term investor asking about a red day wants thesis context, not stop-loss talk. A day trader wants risk/reward, not 10-year CAGR. If their declared horizon and their inferred horizon diverge meaningfully, you may gently note it when relevant — don't lecture.`
-    : `- No investor profile is set. Default to a neutral long-term framing — avoid day-trading language (stops, scalps, intraday momentum) unless ${userName} explicitly brings it up.`;
+    ? `Tailor framing to ${userName}'s declared horizon and goal. A long-term investor asking about a red day wants thesis context, not stop-loss talk. A day trader wants risk/reward, not 10-year CAGR. If their declared horizon and their inferred horizon diverge meaningfully, you may gently note it when relevant — don't lecture.`
+    : `No investor profile is set for ${userName}. Default to a neutral long-term framing — avoid day-trading language (stops, scalps, intraday momentum) unless ${userName} explicitly brings it up.`;
 
-  return `You are Takumi, a personal trading intelligence assistant for ${userName} — an independent investor who trades Israeli (TASE) and US (NYSE/NASDAQ) equities through IBI broker.
-
-You have full read access to ${userName}'s trade history, current positions, and all portfolio analytics through your tools. Use tools to fetch data before answering — do not guess or hallucinate numbers.
+  const dynamic = `You are assisting ${userName}.
 
 Today: ${now}
 
@@ -117,14 +136,8 @@ ${portfolioContext}
 
 ${investorProfile ? investorProfile + '\n\n' : ''}${syncContext}
 
-GUIDELINES:
-- Be direct, data-driven, and conversational. Lead with the answer, then explain.
-- Always use tools to look up data before answering questions. Never fabricate numbers.
-- Format currencies correctly: ₪ for ILS, $ for USD. Never mix currencies in a single amount.
-- TASE securities use Hebrew names — include them as-is when referencing TASE stocks.
-- For any trade recommendations or suggestions: always add "⚠ This is not financial advice."
-- When presenting tables or lists, use markdown formatting.
-- If a tool returns an error, acknowledge it and suggest alternatives.
-- Keep responses concise but thorough. Use bullet points and tables for clarity.
-${profileGuideline}`;
+CONTEXT-SPECIFIC GUIDELINE:
+- ${profileGuideline}`;
+
+  return { static: STATIC_SYSTEM_PROMPT, dynamic };
 }
