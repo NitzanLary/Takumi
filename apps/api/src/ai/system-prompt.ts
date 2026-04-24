@@ -8,9 +8,42 @@ import { getOpenPositions } from '../services/position.service.js';
 import { getSyncStatus } from '../services/sync.service.js';
 import { prisma } from '../lib/db.js';
 
+const HORIZON_LABELS: Record<string, string> = {
+  intraday: 'intraday / day trading',
+  swing: 'days to weeks (swing)',
+  position: 'months to a year (position)',
+  long_term: '1+ years (long-term)',
+  mixed: 'mixed — varies by position',
+};
+
+const GOAL_LABELS: Record<string, string> = {
+  aggressive_growth: 'aggressive capital growth',
+  steady_growth: 'steady long-term growth',
+  income: 'dividend income',
+  preservation: 'capital preservation',
+  learning: 'learning / experimenting',
+};
+
+function inferredHorizonLabel(avgDays: number | null | undefined): string | null {
+  if (avgDays == null) return null;
+  if (avgDays < 2) return 'intraday';
+  if (avgDays < 30) return 'swing (days to weeks)';
+  if (avgDays < 365) return 'position (months)';
+  return 'long-term (1+ years)';
+}
+
 export async function buildSystemPrompt(userId: string): Promise<string> {
   const [user, summary, positions, syncStatus] = await Promise.all([
-    prisma.user.findUnique({ where: { id: userId }, select: { displayName: true, email: true } }),
+    prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        displayName: true,
+        email: true,
+        investorHorizon: true,
+        investorGoal: true,
+        investorNotes: true,
+      },
+    }),
     getPortfolioSummary(userId).catch(() => null),
     getOpenPositions(userId).catch(() => []),
     getSyncStatus(userId).catch(() => null),
@@ -55,6 +88,25 @@ ${top5.map((p) => `  ${p.ticker} (${p.market}) — ${p.quantity} shares @ ${p.cu
 - Records Added: ${syncStatus.recordsAdded}`;
   }
 
+  const horizonLabel = user?.investorHorizon ? HORIZON_LABELS[user.investorHorizon] : null;
+  const goalLabel = user?.investorGoal ? GOAL_LABELS[user.investorGoal] : null;
+  const inferred = inferredHorizonLabel(summary?.avgHoldingDays);
+  const hasDeclaredProfile = Boolean(horizonLabel || goalLabel || user?.investorNotes?.trim());
+
+  let investorProfile = '';
+  if (hasDeclaredProfile || inferred) {
+    const lines: string[] = [];
+    if (horizonLabel) lines.push(`- Declared horizon: ${horizonLabel}`);
+    if (goalLabel) lines.push(`- Declared goal: ${goalLabel}`);
+    if (user?.investorNotes?.trim()) lines.push(`- Notes from ${userName}: "${user.investorNotes.trim()}"`);
+    if (inferred) lines.push(`- Inferred horizon from trade history: ${inferred} (avg holding ${summary!.avgHoldingDays.toFixed(0)} days)`);
+    investorProfile = `INVESTOR PROFILE:\n${lines.join('\n')}`;
+  }
+
+  const profileGuideline = hasDeclaredProfile
+    ? `- Tailor framing to ${userName}'s declared horizon and goal. A long-term investor asking about a red day wants thesis context, not stop-loss talk. A day trader wants risk/reward, not 10-year CAGR. If their declared horizon and their inferred horizon diverge meaningfully, you may gently note it when relevant — don't lecture.`
+    : `- No investor profile is set. Default to a neutral long-term framing — avoid day-trading language (stops, scalps, intraday momentum) unless ${userName} explicitly brings it up.`;
+
   return `You are Takumi, a personal trading intelligence assistant for ${userName} — an independent investor who trades Israeli (TASE) and US (NYSE/NASDAQ) equities through IBI broker.
 
 You have full read access to ${userName}'s trade history, current positions, and all portfolio analytics through your tools. Use tools to fetch data before answering — do not guess or hallucinate numbers.
@@ -63,7 +115,7 @@ Today: ${now}
 
 ${portfolioContext}
 
-${syncContext}
+${investorProfile ? investorProfile + '\n\n' : ''}${syncContext}
 
 GUIDELINES:
 - Be direct, data-driven, and conversational. Lead with the answer, then explain.
@@ -73,5 +125,6 @@ GUIDELINES:
 - For any trade recommendations or suggestions: always add "⚠ This is not financial advice."
 - When presenting tables or lists, use markdown formatting.
 - If a tool returns an error, acknowledge it and suggest alternatives.
-- Keep responses concise but thorough. Use bullet points and tables for clarity.`;
+- Keep responses concise but thorough. Use bullet points and tables for clarity.
+${profileGuideline}`;
 }

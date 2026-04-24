@@ -59,12 +59,28 @@ function clearSessionCookie(res: any) {
   );
 }
 
-function publicUser(u: { id: string; email: string; displayName: string | null; emailVerifiedAt: Date | null }) {
+const INVESTOR_HORIZONS = ['intraday', 'swing', 'position', 'long_term', 'mixed'] as const;
+const INVESTOR_GOALS = ['aggressive_growth', 'steady_growth', 'income', 'preservation', 'learning'] as const;
+
+function publicUser(u: {
+  id: string;
+  email: string;
+  displayName: string | null;
+  emailVerifiedAt: Date | null;
+  investorHorizon?: string | null;
+  investorGoal?: string | null;
+  investorNotes?: string | null;
+  investorProfileUpdatedAt?: Date | null;
+}) {
   return {
     id: u.id,
     email: u.email,
     displayName: u.displayName,
     emailVerifiedAt: u.emailVerifiedAt?.toISOString() ?? null,
+    investorHorizon: u.investorHorizon ?? null,
+    investorGoal: u.investorGoal ?? null,
+    investorNotes: u.investorNotes ?? null,
+    investorProfileUpdatedAt: u.investorProfileUpdatedAt?.toISOString() ?? null,
   };
 }
 
@@ -228,9 +244,65 @@ router.post('/resend-verification', async (req, res) => {
 router.get('/me', requireAuth, async (req, res) => {
   const user = await prisma.user.findUnique({
     where: { id: req.user!.id },
-    select: { id: true, email: true, displayName: true, emailVerifiedAt: true },
+    select: {
+      id: true,
+      email: true,
+      displayName: true,
+      emailVerifiedAt: true,
+      investorHorizon: true,
+      investorGoal: true,
+      investorNotes: true,
+      investorProfileUpdatedAt: true,
+    },
   });
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
+  res.json({ user: publicUser(user) });
+});
+
+// ─── Investor profile ────────────────────────────────────────────
+
+const profileSchema = z.object({
+  // `null` = explicitly cleared; `undefined` = leave as-is.
+  horizon: z.enum(INVESTOR_HORIZONS).nullable().optional(),
+  goal: z.enum(INVESTOR_GOALS).nullable().optional(),
+  notes: z.string().max(500).nullable().optional(),
+});
+
+router.put('/profile', requireAuth, async (req, res) => {
+  const parsed = profileSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Invalid input' });
+  }
+
+  const data: {
+    investorHorizon?: string | null;
+    investorGoal?: string | null;
+    investorNotes?: string | null;
+    investorProfileUpdatedAt: Date;
+  } = { investorProfileUpdatedAt: new Date() };
+
+  if (parsed.data.horizon !== undefined) data.investorHorizon = parsed.data.horizon;
+  if (parsed.data.goal !== undefined) data.investorGoal = parsed.data.goal;
+  if (parsed.data.notes !== undefined) {
+    const trimmed = parsed.data.notes?.trim() ?? null;
+    data.investorNotes = trimmed ? trimmed : null;
+  }
+
+  const user = await prisma.user.update({
+    where: { id: req.user!.id },
+    data,
+    select: {
+      id: true,
+      email: true,
+      displayName: true,
+      emailVerifiedAt: true,
+      investorHorizon: true,
+      investorGoal: true,
+      investorNotes: true,
+      investorProfileUpdatedAt: true,
+    },
+  });
+
   res.json({ user: publicUser(user) });
 });
 

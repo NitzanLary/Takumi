@@ -18,6 +18,14 @@ model User {
   displayName     String?   @map("display_name")
   currencyPref    String    @default("ILS") @map("currency_pref")
   costBasisMethod String    @default("FIFO") @map("cost_basis_method")
+  // Investor profile — declared by the user during onboarding or from /settings.
+  // See system-prompt.ts for how these are fed into the AI agent's context.
+  // `investorProfileUpdatedAt` is set on first save (even if user skips with
+  // empty values), so we can tell "never shown" apart from "intentionally blank".
+  investorHorizon          String?   @map("investor_horizon")           // intraday | swing | position | long_term | mixed
+  investorGoal             String?   @map("investor_goal")              // aggressive_growth | steady_growth | income | preservation | learning
+  investorNotes            String?   @map("investor_notes")
+  investorProfileUpdatedAt DateTime? @map("investor_profile_updated_at")
   createdAt       DateTime  @default(now()) @map("created_at")
   updatedAt       DateTime  @updatedAt @map("updated_at")
 

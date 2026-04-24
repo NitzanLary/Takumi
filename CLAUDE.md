@@ -33,7 +33,7 @@ takumi/
 │   │   └── src/
 │   │       ├── app/          # Pages: dashboard, positions, positions/[ticker], history, analytics, import, alerts, settings, login, signup, verify-email, forgot-password, reset-password. Plus app/api/chat/route.ts — Node Route Handler that proxies SSE for /api/chat (bypasses next.config.mjs rewrites so chunks flush per-event).
 │   │       ├── middleware.ts # Session-cookie gate; redirects to /login when unauthenticated
-│   │       ├── components/   # Providers.tsx, UserProvider.tsx, layout/AppShell.tsx, layout/Sidebar.tsx, layout/TopBar.tsx (with UserMenu), auth/AuthCard.tsx, ai/ChatDrawer.tsx, ai/MessageBubble.tsx, ai/ChatInput.tsx, ai/QuickActions.tsx, stock/StockHeader.tsx, stock/OverviewTab.tsx, stock/TradesTab.tsx, stock/RoundTripsTab.tsx, stock/DividendsFeesTab.tsx, stock/StockChart.tsx
+│   │       ├── components/   # Providers.tsx, UserProvider.tsx, layout/AppShell.tsx, layout/Sidebar.tsx, layout/TopBar.tsx (with UserMenu), auth/AuthCard.tsx, ai/ChatDrawer.tsx, ai/MessageBubble.tsx, ai/ChatInput.tsx, ai/QuickActions.tsx, stock/StockHeader.tsx, stock/OverviewTab.tsx, stock/TradesTab.tsx, stock/RoundTripsTab.tsx, stock/DividendsFeesTab.tsx, stock/StockChart.tsx, profile/InvestorProfileForm.tsx, profile/OnboardingModal.tsx
 │   │       ├── stores/       # chat-store.ts, ui-store.ts
 │   │       └── lib/          # api-client.ts (401→/login redirect), formatters.ts, sse-client.ts
 │   └── api/                  # Express 5, TypeScript, Prisma
@@ -100,7 +100,7 @@ Schema in `packages/db/prisma/schema.prisma`. PostgreSQL provider, Prisma ORM.
 
 | Table | Purpose | Key Notes |
 |---|---|---|
-| `users` | Accounts | Unique on `email`. Columns: `password_hash` (bcrypt cost 12), `email_verified_at`, `display_name`, `currency_pref`, `cost_basis_method`, timestamps. |
+| `users` | Accounts | Unique on `email`. Columns: `password_hash` (bcrypt cost 12), `email_verified_at`, `display_name`, `currency_pref`, `cost_basis_method`, `investor_horizon`, `investor_goal`, `investor_notes`, `investor_profile_updated_at`, timestamps. |
 | `sessions` | Active login sessions | `token_hash` = SHA-256 of the opaque cookie value. 30-day expiry with rolling refresh on activity. Cascades on user delete. |
 | `verification_tokens` | Email-verify + password-reset tokens | `purpose` ∈ {`email_verify`, `password_reset`}. `token_hash`, `expires_at`, `consumed_at`. Indexed by `(userId, purpose)`. |
 | `trades` | All transaction records (trades + non-trades) | Unique on `(userId, tradeId, source)`. `user_id` FK cascades. `direction` field: BUY/SELL for core trades; DIVIDEND, TAX, FEE, TRANSFER, CONVERSION, CREDIT, DEPOSIT, WITHDRAWAL, SPLIT for non-trades. Extra fields: `proceeds_fx`, `proceeds_ils`, `capital_gains_tax`. All services filter to BUY/SELL by default and scope by `userId`. |
@@ -130,6 +130,7 @@ All routes except `/api/health` and `/api/auth/*` require a valid session cookie
 | POST | `/api/auth/resend-verification` | auth.ts | Re-send verification email (always 200 to avoid user enumeration) |
 | POST | `/api/auth/forgot-password` | auth.ts | Issue reset token, send email (always 200) |
 | POST | `/api/auth/reset-password` | auth.ts | Consume reset token, set new password, invalidate existing sessions |
+| PUT | `/api/auth/profile` | auth.ts | Update investor profile (horizon, goal, notes). Sets `investor_profile_updated_at`. Accepts partial updates; explicit `null` clears a field. |
 | GET | `/api/trades` | trades.ts | List trades (paginated, filterable by ticker/market/direction). Defaults to core trades (BUY/SELL) only; pass `includeNonTrades=true` for all transactions |
 | GET | `/api/sync/status` | sync.ts | Last import status |
 | GET | `/api/sync/log` | sync.ts | Import history (limit query param) |
@@ -174,7 +175,7 @@ Auth pages (`/login`, `/signup`, `/verify-email`, `/forgot-password`, `/reset-pa
 | `/analytics` | **Functional** | Realized P&L summary (per-currency P&L, total/closed trade counts, avg return, avg holding period), behavioral stats (8 cards), TASE vs US comparison, per-ticker P&L breakdown table (ticker cells link to `/positions/:ticker`), monthly P&L heatmap (color-coded grid), risk metrics cards (HHI, drawdown, Sharpe, Sortino) |
 | `/import` | **Functional** | XLSX drag-and-drop import with file tracking, import status, import history table |
 | `/alerts` | Stub | Empty page |
-| `/settings` | Stub | Empty page |
+| `/settings` | **Functional** | Investor profile editor (horizon, goal, free-text notes) + account info (email, display name). Edits go to `PUT /api/auth/profile`. Form component is [InvestorProfileForm](apps/web/src/components/profile/InvestorProfileForm.tsx). |
 
 **Layout:** Sidebar (left, 240px wide) + TopBar (56px tall) + main content. Sidebar nav has 7 items.
 
@@ -182,6 +183,7 @@ Auth pages (`/login`, `/signup`, `/verify-email`, `/forgot-password`, `/reset-pa
 
 - **Per-user data scoping (CRITICAL)** — every backend service function that touches per-user tables (`trades`, `alerts`, `portfolio_snapshots`, `ai_conversations`, `sync_log`) takes `userId` as its first argument and threads it into the Prisma `where` clause. Route handlers get `userId` from `req.user!.id` (guaranteed by `requireAuth`). The in-memory FIFO match cache in `pnl.service.ts` is keyed by `userId` — a single-key cache would leak one user's FIFO results to another within the 1-minute TTL. The `securities`, `market_prices`, and `exchange_rates` tables are shared and intentionally NOT scoped by user. AI tool executors have the signature `(userId, input) => Promise<unknown>` and the chat handler passes `req.user!.id` through `executeTool`.
 - **Auth middleware** — `requireAuth` is mounted once via `app.use("/api", requireAuth)` in `apps/api/src/index.ts`, AFTER the public routes (`/api/health`, `/api/auth/*`). It checks the `takumi_session` cookie against the `sessions` table (SHA-256 of the raw value is stored), rejects expired or email-unverified sessions, and sets `req.user`. Rolling refresh: if the session hasn't been touched in >24h, its expiry is bumped by 30d (fire-and-forget).
+- **Investor profile (AI framing)** — `users.investor_horizon` (intraday/swing/position/long_term/mixed), `users.investor_goal` (aggressive_growth/steady_growth/income/preservation/learning), and free-text `users.investor_notes` are declared by the user during onboarding and editable in `/settings`. `buildSystemPrompt` in [system-prompt.ts](apps/api/src/ai/system-prompt.ts) injects them as an `INVESTOR PROFILE` block alongside an **inferred** horizon derived from `summary.avgHoldingDays` (so the agent can notice drift between declared and actual behaviour). When nothing is declared, the system prompt includes a guideline telling the agent to default to long-term framing and avoid day-trading language. `users.investor_profile_updated_at` is set on first save — including when the user skips with empty values — so `OnboardingModal` in [apps/web/src/components/profile/OnboardingModal.tsx](apps/web/src/components/profile/OnboardingModal.tsx) doesn't keep nagging. Enum values are mirrored in three places: `INVESTOR_HORIZONS`/`INVESTOR_GOALS` in [auth.ts](apps/api/src/routes/auth.ts), `InvestorHorizon`/`InvestorGoal` types in [UserProvider.tsx](apps/web/src/components/UserProvider.tsx), and `HORIZON_OPTIONS`/`GOAL_OPTIONS` in [InvestorProfileForm.tsx](apps/web/src/components/profile/InvestorProfileForm.tsx) — keep them in sync if you add a value.
 - **TypeScript** for all Node.js code (ESM — `"type": "module"` everywhere)
 - **File extensions in imports** — always use `.js` in TypeScript import paths (`./lib/config.js`)
 - **Shared types** live in `@takumi/types`, not duplicated across apps

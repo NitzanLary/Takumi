@@ -4,11 +4,18 @@ import { createContext, useContext, useEffect, useState, useCallback } from "rea
 import { usePathname, useRouter } from "next/navigation";
 import { apiFetch } from "@/lib/api-client";
 
+export type InvestorHorizon = "intraday" | "swing" | "position" | "long_term" | "mixed";
+export type InvestorGoal = "aggressive_growth" | "steady_growth" | "income" | "preservation" | "learning";
+
 export interface CurrentUser {
   id: string;
   email: string;
   displayName: string | null;
   emailVerifiedAt: string | null;
+  investorHorizon: InvestorHorizon | null;
+  investorGoal: InvestorGoal | null;
+  investorNotes: string | null;
+  investorProfileUpdatedAt: string | null;
 }
 
 interface UserContextValue {

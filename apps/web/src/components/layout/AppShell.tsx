@@ -4,6 +4,7 @@ import { usePathname } from "next/navigation";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { ChatDrawer } from "@/components/ai/ChatDrawer";
+import { OnboardingModal } from "@/components/profile/OnboardingModal";
 
 const AUTH_PATHS = new Set([
   "/login",
@@ -29,6 +30,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <main className="flex-1 overflow-y-auto p-3 sm:p-6">{children}</main>
       </div>
       <ChatDrawer />
+      <OnboardingModal />
     </div>
   );
 }
