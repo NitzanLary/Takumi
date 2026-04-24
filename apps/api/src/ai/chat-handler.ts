@@ -99,18 +99,27 @@ function buildMessageHistory(
         messages.push({ role: 'assistant', content: msg.content });
       }
     } else if (msg.role === 'tool') {
-      // Tool result message
+      // Tool result — Anthropic requires all tool_result blocks for an
+      // assistant turn's tool_use blocks to sit in ONE next user message.
+      // Coalesce consecutive tool rows (parallel tool calls) into the
+      // previous user message's content.
       const parsed = tryParseJson(msg.content);
-      messages.push({
-        role: 'user',
-        content: [
-          {
-            type: 'tool_result',
-            tool_use_id: (parsed as any)?.tool_use_id || `tool_${Date.now()}`,
-            content: JSON.stringify((parsed as any)?.result ?? msg.content),
-          },
-        ],
-      });
+      const toolResultBlock: Anthropic.Messages.ToolResultBlockParam = {
+        type: 'tool_result',
+        tool_use_id: (parsed as any)?.tool_use_id || `tool_${Date.now()}`,
+        content: JSON.stringify((parsed as any)?.result ?? msg.content),
+      };
+      const prev = messages[messages.length - 1];
+      if (
+        prev &&
+        prev.role === 'user' &&
+        Array.isArray(prev.content) &&
+        prev.content.every((b) => (b as any).type === 'tool_result')
+      ) {
+        (prev.content as Anthropic.Messages.ContentBlockParam[]).push(toolResultBlock);
+      } else {
+        messages.push({ role: 'user', content: [toolResultBlock] });
+      }
     }
   }
 
