@@ -19,6 +19,7 @@ export function FloatingChatBar() {
   const open = useChatStore((s) => s.open);
   const sendMessage = useChatStore((s) => s.sendMessage);
   const isStreaming = useChatStore((s) => s.isStreaming);
+  const setDraftMessage = useChatStore((s) => s.setDraftMessage);
 
   const [value, setValue] = useState("");
   const [placeholderIdx, setPlaceholderIdx] = useState(0);
@@ -66,6 +67,14 @@ export function FloatingChatBar() {
     open();
   }
 
+  function handleOpenWithDraft() {
+    if (value) {
+      setDraftMessage(value);
+      setValue("");
+    }
+    open();
+  }
+
   // Hide when drawer is open — drawer has its own input
   if (isOpen) return null;
 
@@ -109,11 +118,7 @@ export function FloatingChatBar() {
               type="text"
               value={value}
               onChange={(e) => setValue(e.target.value)}
-              onClick={(e) => {
-                // Clicking anywhere on the input keeps typing-in-place UX;
-                // only auto-open the drawer when the user hits Enter.
-                e.stopPropagation();
-              }}
+              onClick={handleOpenWithDraft}
               placeholder={ROTATING_PLACEHOLDERS[placeholderIdx]}
               className="w-full bg-transparent text-sm text-gray-900 placeholder:text-gray-400 focus:outline-none"
               aria-label="Ask Takumi AI"

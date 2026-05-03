@@ -56,6 +56,10 @@ interface ChatState {
   error: string | null;
   sendMessage: (text: string) => Promise<void>;
   stopStreaming: () => void;
+
+  // Draft hand-off (e.g. typed text from FloatingChatBar passed to ChatInput when drawer opens)
+  draftMessage: string;
+  setDraftMessage: (text: string) => void;
 }
 
 function generateId(): string {
@@ -300,4 +304,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
     );
     set({ messages: msgs, isStreaming: false });
   },
+
+  // ─── Draft hand-off ─────────────────────
+  draftMessage: '',
+  setDraftMessage: (text: string) => set({ draftMessage: text }),
 }));
