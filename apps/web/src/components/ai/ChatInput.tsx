@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import { useChatStore } from "@/stores/chat-store";
 
 interface ChatInputProps {
   onSend: (message: string) => void;
@@ -9,12 +10,27 @@ interface ChatInputProps {
 }
 
 export function ChatInput({ onSend, disabled, onStop }: ChatInputProps) {
-  const [value, setValue] = useState("");
+  const draftMessage = useChatStore((s) => s.draftMessage);
+  const setDraftMessage = useChatStore((s) => s.setDraftMessage);
+  const [value, setValue] = useState(draftMessage);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // Auto-focus when drawer opens (component mounts)
+  // Auto-focus when drawer opens (component mounts), and consume any draft
+  // handed off from FloatingChatBar so the user can keep typing seamlessly.
   useEffect(() => {
-    textareaRef.current?.focus();
+    const el = textareaRef.current;
+    if (!el) return;
+    el.focus();
+    if (draftMessage) {
+      el.style.height = "auto";
+      el.style.height = Math.min(el.scrollHeight, 140) + "px";
+      // Place caret at the end of the carried-over text.
+      const len = el.value.length;
+      el.setSelectionRange(len, len);
+      setDraftMessage("");
+    }
+    // Run once on mount only — the draft is consumed and cleared immediately.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSend = useCallback(() => {
