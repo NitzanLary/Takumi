@@ -114,7 +114,7 @@ export async function getLatestPrices(
         dayChangePct: cached.dayChangePct ? Number(cached.dayChangePct) : null,
         high52w: cached.high52w ? Number(cached.high52w) : null,
         low52w: cached.low52w ? Number(cached.low52w) : null,
-        volume: cached.volume,
+        volume: cached.volume == null ? null : Number(cached.volume),
         currency,
         fetchedAt: cached.fetchedAt.toISOString(),
       });
@@ -137,7 +137,7 @@ export async function getLatestPrices(
         dayChangePct: cached.dayChangePct ? Number(cached.dayChangePct) : null,
         high52w: cached.high52w ? Number(cached.high52w) : null,
         low52w: cached.low52w ? Number(cached.low52w) : null,
-        volume: cached.volume,
+        volume: cached.volume == null ? null : Number(cached.volume),
         currency,
         fetchedAt: cached.fetchedAt.toISOString(),
       });
@@ -226,7 +226,7 @@ export async function getLatestPrices(
             dayChangePct: stale.dayChangePct ? Number(stale.dayChangePct) : null,
             high52w: stale.high52w ? Number(stale.high52w) : null,
             low52w: stale.low52w ? Number(stale.low52w) : null,
-            volume: stale.volume,
+            volume: stale.volume == null ? null : Number(stale.volume),
             currency,
             fetchedAt: stale.fetchedAt.toISOString(),
           });
@@ -284,7 +284,7 @@ export async function getLatestPrices(
           dayChangePct: stale.dayChangePct ? Number(stale.dayChangePct) : null,
           high52w: stale.high52w ? Number(stale.high52w) : null,
           low52w: stale.low52w ? Number(stale.low52w) : null,
-          volume: stale.volume,
+          volume: stale.volume == null ? null : Number(stale.volume),
           currency,
           fetchedAt: stale.fetchedAt.toISOString(),
         });
@@ -332,7 +332,7 @@ export async function getLatestPrices(
           dayChangePct: stale.dayChangePct ? Number(stale.dayChangePct) : null,
           high52w: stale.high52w ? Number(stale.high52w) : null,
           low52w: stale.low52w ? Number(stale.low52w) : null,
-          volume: stale.volume,
+          volume: stale.volume == null ? null : Number(stale.volume),
           currency,
           fetchedAt: stale.fetchedAt.toISOString(),
         });

@@ -72,6 +72,17 @@ const QUICK_ACTIONS: QuickAction[] = [
       </svg>
     ),
   },
+  {
+    label: "S&P 500 counterfactual",
+    prompt: "What if I'd put every shekel I invested into the S&P 500 instead? Mirror my BUY timing and compare against my actual P&L.",
+    accent: "from-indigo-500/15 to-blue-500/15 text-indigo-700 ring-indigo-100",
+    icon: (
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
+        <path d="M3 14.5 7 10.5l3 3 7-7" />
+        <path d="M13 6.5h4v4" />
+      </svg>
+    ),
+  },
 ];
 
 interface QuickActionsProps {

@@ -9,6 +9,11 @@ import { getSnapshots } from '../../services/snapshot.service.js';
 import { getOpenPositions } from '../../services/position.service.js';
 import { getCurrentRate, getRate } from '../../services/exchange-rate.service.js';
 import { getRiskMetrics } from '../../services/risk.service.js';
+import {
+  simulateAlternativeInvestment,
+  type SimulationScope,
+  type SimulationMode,
+} from '../../services/alt-investment.service.js';
 import { prisma } from '../../lib/db.js';
 
 import type { ToolExecutor } from './core-tools.js';
@@ -59,6 +64,31 @@ export const tier2ToolSchemas: Anthropic.Messages.Tool[] = [
       type: 'object' as const,
       properties: {},
       required: [],
+    },
+  },
+  {
+    name: 'simulate_alternative_investment',
+    description:
+      'Counterfactual: mirror the user\'s BUY cash flows into a single target security (e.g. AAPL, SPY, ^GSPC, ^TA125, QQQ, or a TASE paper number) and compare the hypothetical outcome against the user\'s actual realized + unrealized P&L. Use this whenever the user asks "what if I\'d invested in X instead?" or wants an opportunity-cost comparison.',
+    input_schema: {
+      type: 'object' as const,
+      properties: {
+        target_ticker: {
+          type: 'string',
+          description: 'Yahoo-compatible symbol of the hypothetical investment (e.g. AAPL, SPY, ^GSPC for S&P 500, ^TA125 for TA-125, or a TASE paper number).',
+        },
+        scope: {
+          type: 'string',
+          enum: ['all', 'tase', 'us'],
+          description: 'Which subset of the user\'s BUYs to mirror. Default "all".',
+        },
+        mode: {
+          type: 'string',
+          enum: ['mirror_timing', 'lump_sum'],
+          description: 'mirror_timing (default): one hypothetical buy per real BUY on the same date. lump_sum: invest the total capital on the date of the first BUY.',
+        },
+      },
+      required: ['target_ticker'],
     },
   },
 ];
@@ -259,10 +289,22 @@ async function execGetRiskReport(userId: string): Promise<unknown> {
   };
 }
 
+async function execSimulateAlternativeInvestment(
+  userId: string,
+  input: Record<string, unknown>
+): Promise<unknown> {
+  return simulateAlternativeInvestment(userId, {
+    targetTicker: String(input.target_ticker),
+    scope: (input.scope as SimulationScope | undefined) ?? 'all',
+    mode: (input.mode as SimulationMode | undefined) ?? 'mirror_timing',
+  });
+}
+
 // ─── Executor Map ───────────────────────────────────────────────
 
 export const tier2ToolExecutors: Map<string, ToolExecutor> = new Map([
   ['get_benchmark_comparison', execGetBenchmarkComparison],
   ['get_currency_impact', execGetCurrencyImpact],
   ['get_risk_report', execGetRiskReport],
+  ['simulate_alternative_investment', execSimulateAlternativeInvestment],
 ]);

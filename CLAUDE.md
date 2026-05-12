@@ -6,7 +6,7 @@
 
 A multi-user web app for independent investors trading Israeli (TASE) and US (NYSE/NASDAQ) equities through IBI broker. Transactions are imported from IBI's XLSX exports. Provides analytics dashboards and a persistent AI chat agent powered by Claude. All data is per-user — trades, positions, alerts, conversations, and snapshots are scoped by `user_id`.
 
-The full PRD is in `Takumi_PRD.md` at the project root — refer to it for detailed requirements, agent tool definitions (24 tools across 3 tiers), alert types, data enrichment strategy, and example conversations.
+The full PRD is in `Takumi_PRD.md` at the project root — refer to it for detailed requirements, agent tool definitions (25 tools across 3 tiers), alert types, data enrichment strategy, and example conversations.
 
 ## Architecture
 
@@ -40,7 +40,7 @@ takumi/
 │       └── src/
 │           ├── index.ts      # App entry — registers auth router (public) + requireAuth + resource routers
 │           ├── routes/       # auth.ts, trades.ts, sync.ts, positions.ts, analytics.ts, market.ts, exchange-rates.ts, snapshots.ts, stock.ts, chat.ts
-│           ├── services/     # trade.service.ts, sync.service.ts, xlsx-import.service.ts, pnl.service.ts, position.service.ts, analytics.service.ts, market.service.ts, themarker.service.ts, stooq.service.ts, exchange-rate.service.ts, snapshot.service.ts, risk.service.ts, whatif.service.ts, stock-detail.service.ts, email.service.ts
+│           ├── services/     # trade.service.ts, sync.service.ts, xlsx-import.service.ts, pnl.service.ts, position.service.ts, analytics.service.ts, market.service.ts, themarker.service.ts, stooq.service.ts, exchange-rate.service.ts, snapshot.service.ts, risk.service.ts, whatif.service.ts, alt-investment.service.ts, stock-detail.service.ts, email.service.ts
 │           ├── data/         # tase-ticker-map.json, sector-map.json
 │           ├── middleware/   # error-handler.ts, require-auth.ts
 │           ├── lib/          # config.ts, db.ts
@@ -204,7 +204,7 @@ Auth pages (`/login`, `/signup`, `/verify-email`, `/forgot-password`, `/reset-pa
 - **Ticker-rename UX** — `StockSummary` now carries `priorNames: string[]` listing legacy `securityName` values from the user's own trades whose embedded ticker (e.g. "FB" in "FACEBOOK(FB)", "FIVG" in "FIVG US") differs from the current ticker. This filters out benign IBI-vs-Yahoo format mismatches like "ASTS US" vs "AST SpaceMobile, Inc." which are NOT renames. `StockHeader` renders a "Formerly known as …" subtitle when non-empty; `TradesTab` tags each pre-rename row with a muted "as FIVG US" under the date. Rename extraction lives in `extractEmbeddedTicker` in `stock-detail.service.ts`.
 - **XLSX import writes are batched, not serial** — after parsing, the service pre-fetches which `tradeId`s already exist for this user+source, then does one bulk `prisma.trade.createMany({ skipDuplicates: true })` for brand-new rows and chunked parallel `prisma.trade.update()` calls (concurrency 10) for existing rows. Serial `upsert` per row hit Next.js' ~30s proxy timeout against a remote Postgres (each round-trip ~100ms on the Railway proxy from local dev × ~280 rows = ~80s → `ECONNRESET` / socket hang up in the browser, even though the API eventually finished). If you change the loop, keep it bulk/parallel or local-dev imports will break again.
 - **Transaction linking** — Related transactions (e.g., dividend + tax withholding) share the same `ticker` and `tradeDate`. Query by ticker to see all related activity. No explicit `groupId` field.
-- **Market data caching** — Yahoo Finance prices are cached in `market_prices` with 15-minute staleness. The `market.service.ts` checks cache first, fetches from Yahoo only for stale/missing tickers. On failure, serves stale cache. Benchmarks (TA-125, S&P 500) are cached the same way.
+- **Market data caching** — Yahoo Finance prices are cached in `market_prices` with 15-minute staleness. The `market.service.ts` checks cache first, fetches from Yahoo only for stale/missing tickers. On failure, serves stale cache. Benchmarks (TA-125, S&P 500) are cached the same way. `market_prices.volume` is `BigInt?` (PostgreSQL `BIGINT`) — INT4 overflowed on indices like S&P 500 whose daily volume exceeds 2³¹. Read sites in `market.service.ts` convert with `Number(cached.volume)` since real volumes are well under `Number.MAX_SAFE_INTEGER`.
 - **TASE ticker mapping** — TASE securities use IBI paper numbers as `ticker` (e.g., `1081820`), but Yahoo Finance requires trading symbols with `.TA` suffix (e.g., `LUMI.TA`). The mapping is maintained in `apps/api/src/data/tase-ticker-map.json` and synced to the `securities.yahooSymbol` column.
 - **TheMarker Finance fallback** — TASE tickers without a Yahoo mapping (notably Israeli mutual funds / קרנות נאמנות which have no `.TA` trading symbol, e.g., `1143726`, `1169408`) fall back to TheMarker Finance. `themarker.service.ts` fetches `https://finance.themarker.com/stock/{paperId}`, parses the server-rendered Apollo cache from `<script id="__NEXT_DATA__">`, and reads `ROOT_QUERY.assets({"ids":"<paperId>"}).0`. Prices are quoted in agorot and divided by 100 to normalize to ILS (same convention as IBI). No API key, no mapping — IBI paper number is the URL. Yahoo remains the primary source for mapped tickers (provides 52w high/low); TheMarker fills daily change/volume only. Also invoked if Yahoo returns no data for a mapped TASE ticker.
 - **Stooq fallback (US)** — Yahoo Finance is unreliable from Railway (the `yahoo-finance2` crumb fetch to `fc.yahoo.com` frequently fails with `ETIMEDOUT` or 429, taking the whole library offline). `stooq.service.ts` is a reliable fallback for US equities and the S&P 500 (`^GSPC` → `^spx`). Endpoint: `https://stooq.com/q/l/?s=<sym>.us&f=spd2t2ohlcv` — CSV fields: symbol, prevClose, date, time, open, high, low, close, volume. `dayChange` derived as `close - prevClose`. Delayed ~15 min, no 52w high/low. Kicks in whenever Yahoo fails for a US ticker (per-ticker `No quote data` response OR the whole Yahoo call throwing). Does NOT cover TASE — TASE fallback is TheMarker.
@@ -276,7 +276,7 @@ Auth pages (`/login`, `/signup`, `/verify-email`, `/forgot-password`, `/reset-pa
 - [x] FIFO matching results cached with 1-minute TTL to avoid redundant computation during multi-tool chat turns
 - [x] **11 core tools**: `get_portfolio_summary`, `query_trades`, `get_pnl_breakdown`, `get_behavioral_report`, `run_what_if`, `get_market_price`, `create_alert`, `list_alerts`, `delete_alert`, `trigger_sync`, `get_sync_status`
 - [x] **7 Tier 1 tools** (no external APIs — derived from existing DB data): `get_dividend_summary`, `get_cost_analysis`, `get_performance_timeline`, `get_streaks`, `get_sector_exposure`, `get_security_info`, `get_holding_period_analysis`
-- [x] **3 Tier 2 tools** (powered by Phase 3 market data): `get_benchmark_comparison`, `get_currency_impact`, `get_risk_report`
+- [x] **4 Tier 2 tools** (powered by Phase 3 market data): `get_benchmark_comparison`, `get_currency_impact`, `get_risk_report`, `simulate_alternative_investment`
 - [x] What-if scenario engine (`whatif.service.ts`) — stop-loss simulation and modified sell date scenarios
 - [x] Static sector/industry mapping (`sector-map.json`) for ~25 tickers
 - [x] Context management: last 40 raw messages kept in full for API calls; conversation title auto-generated from first message
@@ -346,7 +346,7 @@ See PRD Section 7.5 for full details. Summary:
 - **Tier 2 (Phase 3 infra + Phase 4 tools)**: External APIs — live prices, benchmarks, exchange rates, risk metrics, portfolio snapshots. Market data services built in Phase 3; agent tools that consume them ship in Phase 4.
 - **Tier 3 (Phase 5)**: Advanced — technical indicators, news/events, tax intelligence. Requires Finnhub + daily OHLCV history.
 
-**Total agent tools**: 24 (11 core + 7 Tier 1 + 3 Tier 2 + 3 Tier 3 + `get_tax_report`).
+**Total agent tools**: 25 (11 core + 7 Tier 1 + 4 Tier 2 + 3 Tier 3 + `get_tax_report`).
 
 **DB tables added in Phase 3**: `portfolio_snapshots`. **Planned new tables**: `price_history` (Phase 5), `security_events` (Phase 5). Existing `securities` table extended with `yahooSymbol`, `industry`, `marketCapBucket` (Phase 3). Existing `market_prices` extended with `dayChange`, `dayChangePct`, `high52w`, `low52w`, `volume` (Phase 3).
 
