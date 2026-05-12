@@ -48,6 +48,7 @@ export const DIRECTION_MAP: Record<string, Direction> = {
   "משיכת עמלה מטח": "FEE",         // FX-denominated commission charge
   "שונות מזומן בשח": "TRANSFER",
   "ריבית מזומן בשח": "INTEREST",   // Interest accrued on cash balance
+  "משיכת ריבית מטח": "INTEREST",   // Interest accrued on foreign-currency (USD) cash balance
 };
 
 // ─── Security name parsing ────────────────────────────────────────────────
