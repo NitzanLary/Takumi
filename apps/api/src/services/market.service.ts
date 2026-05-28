@@ -14,6 +14,7 @@ import path from 'path';
 import type { MarketQuote, Currency } from '@takumi/types';
 import { fetchTheMarkerQuote } from './themarker.service.js';
 import { fetchStooqQuote, fetchStooqHistorical, resolveStooqSymbol } from './stooq.service.js';
+import * as priceHistory from './price-history.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -406,39 +407,24 @@ export type HistoricalPriceResult =
   | { available: true; source: 'yahoo' | 'stooq'; points: HistoricalPricePoint[] }
   | { available: false; reason: 'unmapped_tase' | 'fetch_failed' };
 
-// In-memory cache for historical price series (1-day TTL). Keyed by
-// ticker|from|to so varied date ranges are cached independently.
-const HISTORICAL_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const historicalCache = new Map<string, { at: number; result: HistoricalPriceResult }>();
+// Tolerance for the tail-gap coverage check. Anything within this many calendar
+// days of the newest needed date is considered "covered" (absorbs weekends and
+// most market holidays). Real mid-range holiday gaps are NOT refilled — they're
+// genuine, not missing data.
+const COVERAGE_TOLERANCE_DAYS = 3;
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Fetch daily historical closes for a ticker between two dates (inclusive).
- * Yahoo is the primary source (works for US tickers and mapped TASE `.TA` symbols).
- * Stooq is the fallback for US tickers when Yahoo fails (matches the quote path).
- * Unmapped TASE tickers (e.g., Israeli mutual funds via TheMarker) have no
- * historical data source and return `{ available: false, reason: 'unmapped_tase' }`.
+ * Yahoo (primary) → Stooq US fallback. Returns null if both upstream sources
+ * fail or are unavailable.
  */
-export async function getHistoricalPrices(
+async function fetchFromUpstream(
   ticker: string,
   market: string,
+  yahooSymbol: string | null,
   from: Date,
-  to: Date
-): Promise<HistoricalPriceResult> {
-  const cacheKey = `${ticker}|${from.toISOString().slice(0, 10)}|${to.toISOString().slice(0, 10)}`;
-  const cached = historicalCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < HISTORICAL_CACHE_TTL_MS) {
-    return cached.result;
-  }
-
-  const yahooSymbol = resolveYahooSymbol(ticker, market);
-
-  // Unmapped TASE — no historical source available (TheMarker is quote-only).
-  if (market === 'TASE' && !yahooSymbol) {
-    const result: HistoricalPriceResult = { available: false, reason: 'unmapped_tase' };
-    historicalCache.set(cacheKey, { at: Date.now(), result });
-    return result;
-  }
-
+  to: Date,
+): Promise<{ source: 'yahoo' | 'stooq'; points: HistoricalPricePoint[] } | null> {
   if (yahooSymbol) {
     try {
       const chart = await yahooFinance.chart(yahooSymbol, {
@@ -452,9 +438,7 @@ export async function getHistoricalPrices(
         points.push({ date: q.date.toISOString().slice(0, 10), close: q.close });
       }
       if (points.length > 0) {
-        const result: HistoricalPriceResult = { available: true, source: 'yahoo', points };
-        historicalCache.set(cacheKey, { at: Date.now(), result });
-        return result;
+        return { source: 'yahoo', points };
       }
       console.warn(`[market] Yahoo returned no historical quotes for ${yahooSymbol}`);
     } catch (err) {
@@ -462,20 +446,116 @@ export async function getHistoricalPrices(
     }
   }
 
-  // Stooq fallback — US only
   const stooqSymbol = resolveStooqSymbol(ticker, market);
   if (stooqSymbol) {
     const points = await fetchStooqHistorical(stooqSymbol, from, to);
     if (points.length > 0) {
-      const result: HistoricalPriceResult = { available: true, source: 'stooq', points };
-      historicalCache.set(cacheKey, { at: Date.now(), result });
-      return result;
+      return { source: 'stooq', points };
     }
   }
 
-  const result: HistoricalPriceResult = { available: false, reason: 'fetch_failed' };
-  historicalCache.set(cacheKey, { at: Date.now(), result });
-  return result;
+  return null;
+}
+
+/**
+ * Fetch daily historical closes for a ticker between two dates (inclusive).
+ *
+ * DB-first: reads cached rows from `price_history`, fills only the tail gap
+ * from upstream (Yahoo → Stooq for US), persists the new rows, and returns
+ * the merged series. Restart-resilient; cross-user-shared.
+ *
+ * Unmapped TASE tickers (e.g., Israeli mutual funds via TheMarker) have no
+ * historical data source and return `{ available: false, reason: 'unmapped_tase' }`.
+ */
+export async function getHistoricalPrices(
+  ticker: string,
+  market: string,
+  from: Date,
+  to: Date,
+): Promise<HistoricalPriceResult> {
+  const yahooSymbol = resolveYahooSymbol(ticker, market);
+
+  // Unmapped TASE — no historical source available (TheMarker is quote-only).
+  if (market === 'TASE' && !yahooSymbol) {
+    return { available: false, reason: 'unmapped_tase' };
+  }
+
+  // 1) Read DB cache for the requested range.
+  const cached = await priceHistory.readRange(ticker, from, to);
+
+  // 2) Coverage check — decide whether the cache has a tail gap to fill.
+  const today = new Date();
+  const newestNeeded = to < today ? to : today;
+  let upstreamFrom: Date | null = null;
+  if (cached.length === 0) {
+    upstreamFrom = from;
+  } else {
+    const newestCached = cached[cached.length - 1].date;
+    const gapDays = (newestNeeded.getTime() - newestCached.getTime()) / ONE_DAY_MS;
+    if (gapDays > COVERAGE_TOLERANCE_DAYS) {
+      upstreamFrom = new Date(newestCached.getTime() + ONE_DAY_MS);
+    }
+  }
+
+  // 3) Upstream fetch only if there's a gap.
+  let fetched: { source: 'yahoo' | 'stooq'; points: HistoricalPricePoint[] } | null = null;
+  let upstreamAttempted = false;
+  if (upstreamFrom) {
+    upstreamAttempted = true;
+    fetched = await fetchFromUpstream(ticker, market, yahooSymbol, upstreamFrom, to);
+  }
+
+  // 4) Persist freshly-fetched rows. DB failure must not break the response.
+  if (fetched && fetched.points.length > 0) {
+    try {
+      await priceHistory.bulkInsert(
+        ticker,
+        fetched.points.map((p) => ({
+          date: new Date(p.date),
+          close: p.close,
+          source: fetched!.source,
+        })),
+      );
+    } catch (err) {
+      console.warn(`[market] Failed to persist price_history for ${ticker}:`, err);
+    }
+  }
+
+  // 5) Merge cached + fetched, dedupe by date, sort ascending.
+  const byDate = new Map<string, HistoricalPricePoint>();
+  for (const row of cached) {
+    const ds = row.date.toISOString().slice(0, 10);
+    byDate.set(ds, { date: ds, close: row.close });
+  }
+  if (fetched) {
+    for (const p of fetched.points) {
+      byDate.set(p.date, p);
+    }
+  }
+  const points = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
+
+  if (points.length === 0) {
+    return { available: false, reason: 'fetch_failed' };
+  }
+
+  if (upstreamAttempted && !fetched && cached.length > 0) {
+    console.warn(
+      `[market] Upstream fetch failed for ${ticker}; serving ${cached.length} cached row(s)`,
+    );
+  }
+
+  // Resolve the top-level source: prefer the freshly-fetched source if we
+  // called upstream, otherwise fall back to the source of the most recent
+  // cached row. Default to 'yahoo' if neither is conclusive.
+  let source: 'yahoo' | 'stooq' = 'yahoo';
+  if (fetched) {
+    source = fetched.source;
+  } else if (cached.length > 0) {
+    const lastSource = cached[cached.length - 1].source;
+    source = lastSource === 'stooq' ? 'stooq' : 'yahoo';
+  }
+
+  return { available: true, source, points };
 }
 
 /**
