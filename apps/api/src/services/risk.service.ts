@@ -2,13 +2,13 @@
  * Risk Service — computes portfolio risk metrics.
  *
  * - Herfindahl concentration index (from current positions)
- * - Max drawdown (from portfolio snapshots time series)
- * - Sharpe ratio (annualized, from daily snapshot returns)
+ * - Max drawdown (from daily equity-curve time series)
+ * - Sharpe ratio (annualized, from daily total-value returns)
  * - Sortino ratio (using downside deviation only)
  */
 
 import { getOpenPositions } from './position.service.js';
-import { getSnapshots } from './snapshot.service.js';
+import { getDailyTotalAccountValueSeries } from './equity-curve.service.js';
 import type { RiskMetrics } from '@takumi/types';
 
 const RISK_FREE_RATE = 0.045; // ~4.5% annual (Bank of Israel rate, approximate)
@@ -19,12 +19,12 @@ const MIN_DATA_POINTS = 10;
  * Compute all risk metrics for the portfolio.
  */
 export async function getRiskMetrics(userId: string): Promise<RiskMetrics> {
-  const [positions, snapshots] = await Promise.all([
+  const [positions, series] = await Promise.all([
     getOpenPositions(userId),
-    getSnapshots(userId),
+    getDailyTotalAccountValueSeries(userId),
   ]);
 
-  const dataPoints = snapshots.length;
+  const dataPoints = series.length;
 
   // Herfindahl — from current positions
   const herfindahlIndex = computeHerfindahl(positions.map((p) => p.weight / 100));
@@ -52,7 +52,7 @@ export async function getRiskMetrics(userId: string): Promise<RiskMetrics> {
     };
   }
 
-  const values = snapshots.map((s) => s.totalValue);
+  const values = series.map((p) => p.totalValueIls);
   const dailyReturns = computeDailyReturns(values);
 
   return {

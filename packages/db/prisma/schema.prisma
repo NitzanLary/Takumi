@@ -34,7 +34,6 @@ model User {
   trades             Trade[]
   alerts             Alert[]
   conversations      AiConversation[]
-  snapshots          PortfolioSnapshot[]
   syncLogs           SyncLog[]
 
   @@map("users")
@@ -202,27 +201,6 @@ model PriceHistory {
   @@unique([ticker, date])
   @@index([ticker, date])
   @@map("price_history")
-}
-
-// ─── Portfolio Snapshots ─────────────────────────────────────────
-
-model PortfolioSnapshot {
-  id             String   @id @default(cuid())
-  userId         String   @map("user_id")
-  date           DateTime
-  totalValue     Decimal  @map("total_value")
-  totalCostBasis Decimal  @map("total_cost_basis")
-  unrealizedPnl  Decimal  @map("unrealized_pnl")
-  realizedPnl    Decimal  @map("realized_pnl")
-  positionCount  Int      @map("position_count")
-  snapshotData   String?  @map("snapshot_data") // JSON string
-  createdAt      DateTime @default(now()) @map("created_at")
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, date])
-  @@index([userId, date])
-  @@map("portfolio_snapshots")
 }
 
 // ─── AI Conversations ────────────────────────────────────────────

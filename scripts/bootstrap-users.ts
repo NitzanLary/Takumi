@@ -22,7 +22,6 @@ import bcrypt from "bcryptjs";
 const USER_SCOPED_TABLES = [
   { name: "trades", label: "trades" },
   { name: "alerts", label: "alerts" },
-  { name: "portfolio_snapshots", label: "snapshots" },
   { name: "ai_conversations", label: "conversations" },
   { name: "sync_log", label: "sync logs" },
 ] as const;

@@ -19,18 +19,6 @@ export interface ExchangeRateEntry {
 
 export type PriceSource = "live" | "cached" | "placeholder";
 
-export interface PortfolioSnapshotData {
-  id: string;
-  date: string;
-  totalValue: number;
-  totalCostBasis: number;
-  unrealizedPnl: number;
-  realizedPnl: number;
-  positionCount: number;
-  snapshotData?: Record<string, unknown> | null;
-  createdAt: string;
-}
-
 export interface RiskMetrics {
   herfindahlIndex: number | null;
   maxDrawdown: number | null;

@@ -1,24 +1,15 @@
 "use client";
 
 import { useMemo } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/api-client";
-import { formatNumber } from "@/lib/formatters";
 import type { SyncState } from "@takumi/types";
-import {
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  CartesianGrid,
-  Tooltip,
-  ResponsiveContainer,
-} from "recharts";
 import { PortfolioTotalCard } from "@/components/dashboard/PortfolioTotalCard";
 import {
   MarketCard,
   type MarketRegion,
 } from "@/components/dashboard/MarketCard";
+import { EquityCurveCard } from "@/components/dashboard/EquityCurveCard";
 
 type Currency = "ILS" | "USD";
 
@@ -31,16 +22,6 @@ interface OpenPosition {
   unrealizedPnl: number;
   unrealizedPnlIls: number;
   priceSource: "live" | "cached" | "placeholder";
-}
-
-interface SnapshotData {
-  id: string;
-  date: string;
-  totalValue: number;
-  totalCostBasis: number;
-  unrealizedPnl: number;
-  realizedPnl: number;
-  positionCount: number;
 }
 
 interface ExchangeRate {
@@ -63,8 +44,6 @@ function regionFor(market: string): MarketRegion {
 }
 
 export default function DashboardPage() {
-  const queryClient = useQueryClient();
-
   const { data: syncStatus } = useQuery({
     queryKey: ["sync-status"],
     queryFn: () => apiFetch<SyncState>("/api/sync/status"),
@@ -83,19 +62,9 @@ export default function DashboardPage() {
       apiFetch<MarketPnlRow[]>("/api/analytics/pnl?groupBy=market"),
   });
 
-  const { data: snapshots } = useQuery({
-    queryKey: ["snapshots"],
-    queryFn: () => apiFetch<SnapshotData[]>("/api/snapshots"),
-  });
-
   const { data: fx } = useQuery({
     queryKey: ["exchange-rate"],
     queryFn: () => apiFetch<ExchangeRate>("/api/exchange-rates"),
-  });
-
-  const captureMutation = useMutation({
-    mutationFn: () => apiFetch("/api/snapshots/capture", { method: "POST" }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["snapshots"] }),
   });
 
   const rate = fx?.rate ?? null;
@@ -161,74 +130,7 @@ export default function DashboardPage() {
         ))}
       </div>
 
-      {/* Equity Curve */}
-      <div className="rounded-xl border border-gray-200 bg-white p-6">
-        <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-lg font-semibold">Equity Curve</h3>
-          <button
-            onClick={() => captureMutation.mutate()}
-            disabled={captureMutation.isPending}
-            className="rounded-lg bg-gray-100 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-200 disabled:opacity-50"
-          >
-            {captureMutation.isPending ? "Capturing..." : "Capture Snapshot"}
-          </button>
-        </div>
-        {!snapshots || snapshots.length < 2 ? (
-          <div className="flex h-64 items-center justify-center text-gray-400">
-            <p className="text-center">
-              {snapshots?.length === 1
-                ? "One snapshot captured. Need at least 2 data points for the chart."
-                : 'No snapshots yet. Click "Capture Snapshot" to start tracking your portfolio value over time.'}
-            </p>
-          </div>
-        ) : (
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart
-                data={snapshots.map((s) => ({
-                  date: new Date(s.date).toLocaleDateString("en-US", {
-                    month: "short",
-                    day: "numeric",
-                  }),
-                  fullDate: new Date(s.date).toLocaleDateString("en-US", {
-                    year: "numeric",
-                    month: "long",
-                    day: "numeric",
-                  }),
-                  value: Math.round(s.totalValue),
-                  pnl: Math.round(s.unrealizedPnl),
-                }))}
-              >
-                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-                <XAxis dataKey="date" tick={{ fontSize: 12 }} stroke="#9ca3af" />
-                <YAxis
-                  tick={{ fontSize: 12 }}
-                  stroke="#9ca3af"
-                  tickFormatter={(v: number) => formatNumber(v)}
-                />
-                <Tooltip
-                  formatter={(value: number, name: string) => [
-                    formatNumber(value),
-                    name === "value" ? "Portfolio Value" : "Unrealized P&L",
-                  ]}
-                  labelFormatter={(
-                    _label: string,
-                    payload: Array<{ payload?: { fullDate?: string } }>
-                  ) => payload?.[0]?.payload?.fullDate ?? _label}
-                />
-                <Line
-                  type="monotone"
-                  dataKey="value"
-                  stroke="#2563eb"
-                  strokeWidth={2}
-                  dot={false}
-                  name="value"
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-      </div>
+      <EquityCurveCard />
     </div>
   );
 }

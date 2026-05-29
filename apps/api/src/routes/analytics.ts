@@ -1,13 +1,15 @@
 import { Router, type Request, type Response } from 'express';
-import type { PnlWindow } from '@takumi/types';
+import type { EquityCurveWindow, PnlWindow } from '@takumi/types';
 import {
   getAnalyticsSummary,
   getPnlBreakdown,
   getTotalTradeCount,
 } from '../services/analytics.service.js';
 import { getRiskMetrics } from '../services/risk.service.js';
+import { computeEquityCurve } from '../services/equity-curve.service.js';
 
 const PNL_WINDOWS: readonly PnlWindow[] = ['all', 'ytd', '12m'];
+const EQUITY_CURVE_WINDOWS: readonly EquityCurveWindow[] = ['1w', '1m', 'ytd', '1y', 'all'];
 
 const router = Router();
 
@@ -52,6 +54,20 @@ router.get('/pnl', async (req: Request, res: Response) => {
 router.get('/risk', async (req: Request, res: Response) => {
   const metrics = await getRiskMetrics(req.user!.id);
   res.json(metrics);
+});
+
+/**
+ * GET /api/analytics/equity-curve?window=1w|1m|ytd|1y|all — on-demand
+ * historical equity curve with KPI strip. See equity-curve.service.ts.
+ */
+router.get('/equity-curve', async (req: Request, res: Response) => {
+  const raw = (req.query.window as string) || '1m';
+  if (!EQUITY_CURVE_WINDOWS.includes(raw as EquityCurveWindow)) {
+    res.status(400).json({ error: 'window must be one of 1w, 1m, ytd, 1y, all' });
+    return;
+  }
+  const data = await computeEquityCurve(req.user!.id, raw as EquityCurveWindow);
+  res.json(data);
 });
 
 export default router;

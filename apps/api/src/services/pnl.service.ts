@@ -313,12 +313,17 @@ export async function getPnlByMonth(
  */
 function resolveWindowStart(window: PnlWindow): Date | null {
   if (window === 'all') return null;
+  const now = new Date();
   if (window === 'ytd') {
-    const now = new Date();
     return new Date(Date.UTC(now.getUTCFullYear(), 0, 1));
   }
-  if (window === '12m') {
-    const now = new Date();
+  if (window === '1w') {
+    return new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+  }
+  if (window === '1m') {
+    return new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  }
+  if (window === '12m' || window === '1y') {
     return new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
   }
   return null;

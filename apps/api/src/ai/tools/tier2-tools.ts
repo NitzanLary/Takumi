@@ -5,7 +5,7 @@
 
 import type Anthropic from '@anthropic-ai/sdk';
 import { getBenchmarks } from '../../services/market.service.js';
-import { getSnapshots } from '../../services/snapshot.service.js';
+import { getDailyTotalAccountValueSeries } from '../../services/equity-curve.service.js';
 import { getOpenPositions } from '../../services/position.service.js';
 import { getCurrentRate, getRate } from '../../services/exchange-rate.service.js';
 import { getRiskMetrics } from '../../services/risk.service.js';
@@ -99,14 +99,14 @@ async function execGetBenchmarkComparison(
   userId: string,
   input: Record<string, unknown>
 ): Promise<unknown> {
-  const [benchmarks, snapshots] = await Promise.all([
+  const [benchmarks, series] = await Promise.all([
     getBenchmarks(),
-    getSnapshots(userId),
+    getDailyTotalAccountValueSeries(userId),
   ]);
 
-  if (snapshots.length < 2) {
+  if (series.length < 2) {
     return {
-      message: 'Not enough portfolio snapshots for comparison. Need at least 2 daily snapshots.',
+      message: 'Not enough portfolio history for comparison.',
       benchmarks: {
         ta125: benchmarks.ta125 ? { price: benchmarks.ta125.price, dayChangePct: benchmarks.ta125.dayChangePct } : null,
         sp500: benchmarks.sp500 ? { price: benchmarks.sp500.price, dayChangePct: benchmarks.sp500.dayChangePct } : null,
@@ -114,12 +114,16 @@ async function execGetBenchmarkComparison(
     };
   }
 
-  // Calculate portfolio return from snapshots
-  const first = snapshots[0];
-  const last = snapshots[snapshots.length - 1];
-  const firstValue = Number(first.totalValue);
-  const lastValue = Number(last.totalValue);
-  const portfolioReturn = firstValue > 0 ? ((lastValue - firstValue) / firstValue) * 100 : 0;
+  // Calculate portfolio return from the daily equity-curve series.
+  // Net external capital deployed in the window is subtracted so the return
+  // reflects performance rather than fresh deposits inflating the end value.
+  const first = series[0];
+  const last = series[series.length - 1];
+  const firstValue = first.totalValueIls;
+  const lastValue = last.totalValueIls;
+  const netExternal = last.externalCapitalIls - first.externalCapitalIls;
+  const base = firstValue + Math.max(netExternal, 0);
+  const portfolioReturn = base > 1 ? ((lastValue - firstValue - netExternal) / base) * 100 : 0;
 
   // If specific ticker requested, find its P&L
   let tickerReturn: number | null = null;

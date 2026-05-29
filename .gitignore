@@ -46,10 +46,13 @@ coverage/
 
 # Playwright / MCP browser artifacts
 .playwright-mcp/
+/dashboard-*.png
+/eq-curve-*.png
 
 # Personal trading data (do not commit) — top-level /data only
 IBI_transactions_*.xlsx
 /data/
+/backups/
 
 # Product requirements document
 Takumi_PRD.md
