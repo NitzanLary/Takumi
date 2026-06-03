@@ -56,7 +56,7 @@ export interface SimulateAlternativeSuccess {
   firstTradeDate: string;
   lastTradeDate: string;
   missingPriceDates: string[];
-  priceSource: 'yahoo' | 'stooq';
+  priceSource: 'yahoo' | 'stooq' | 'funder';
 }
 
 export interface SimulateAlternativeError {

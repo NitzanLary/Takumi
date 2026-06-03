@@ -88,7 +88,7 @@ export type StockChartResponse =
   | {
       available: true;
       currency: Currency;
-      priceSource: "yahoo" | "stooq";
+      priceSource: "yahoo" | "stooq" | "funder";
       points: StockChartPoint[];
     }
   | {

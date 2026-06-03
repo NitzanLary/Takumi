@@ -14,6 +14,11 @@ import path from 'path';
 import type { MarketQuote, Currency } from '@takumi/types';
 import { fetchTheMarkerQuote } from './themarker.service.js';
 import { fetchStooqQuote, fetchStooqHistorical, resolveStooqSymbol } from './stooq.service.js';
+import {
+  fetchFunderHistorical,
+  guessFunderKind,
+  type FunderKind,
+} from './funder.service.js';
 import * as priceHistory from './price-history.service.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -404,7 +409,7 @@ export interface HistoricalPricePoint {
 }
 
 export type HistoricalPriceResult =
-  | { available: true; source: 'yahoo' | 'stooq'; points: HistoricalPricePoint[] }
+  | { available: true; source: 'yahoo' | 'stooq' | 'funder'; points: HistoricalPricePoint[] }
   | { available: false; reason: 'unmapped_tase' | 'fetch_failed' };
 
 // Tolerance for the tail-gap coverage check. Anything within this many calendar
@@ -415,8 +420,13 @@ const COVERAGE_TOLERANCE_DAYS = 3;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Yahoo (primary) → Stooq US fallback. Returns null if both upstream sources
- * fail or are unavailable.
+ * Yahoo (primary) → Stooq US fallback → funder.co.il TASE fallback.
+ * Returns null if all upstream sources fail or are unavailable.
+ *
+ * For TASE tickers the funder leg covers both mapped (when Yahoo returns nothing)
+ * and unmapped (where Yahoo is skipped entirely) cases. The discovered
+ * `funder_kind` is persisted to the `securities` row so subsequent fetches go
+ * straight to the right endpoint.
  */
 async function fetchFromUpstream(
   ticker: string,
@@ -424,7 +434,7 @@ async function fetchFromUpstream(
   yahooSymbol: string | null,
   from: Date,
   to: Date,
-): Promise<{ source: 'yahoo' | 'stooq'; points: HistoricalPricePoint[] } | null> {
+): Promise<{ source: 'yahoo' | 'stooq' | 'funder'; points: HistoricalPricePoint[] } | null> {
   if (yahooSymbol) {
     try {
       const chart = await yahooFinance.chart(yahooSymbol, {
@@ -454,7 +464,91 @@ async function fetchFromUpstream(
     }
   }
 
+  if (market === 'TASE') {
+    const funderPoints = await fetchFunderHistoricalWithKindDiscovery(ticker, from, to);
+    if (funderPoints && funderPoints.length > 0) {
+      return { source: 'funder', points: funderPoints };
+    }
+  }
+
   return null;
+}
+
+/**
+ * Resolve `funder_kind` (seco/fundo) for a TASE paper id, fetch the history,
+ * and lazily persist the discovered kind to the `securities` row.
+ *
+ * First-call flow:
+ *   1. Read `funder_kind` from `securities` if present.
+ *   2. Otherwise guess from the paper id (`5XXXXXX` → fundo, else seco).
+ *   3. Try the guessed/cached kind. On empty response, flip and retry once.
+ *   4. On success, upsert the discovered kind to `securities` (fire-and-forget).
+ *
+ * Returns null on any total failure so the caller can return null cleanly.
+ */
+async function fetchFunderHistoricalWithKindDiscovery(
+  ticker: string,
+  from: Date,
+  to: Date,
+): Promise<HistoricalPricePoint[] | null> {
+  let cachedKind: FunderKind | null = null;
+  try {
+    const row = await prisma.security.findUnique({
+      where: { ticker },
+      select: { funderKind: true },
+    });
+    if (row?.funderKind === 'seco' || row?.funderKind === 'fundo') {
+      cachedKind = row.funderKind;
+    }
+  } catch (err) {
+    console.warn(`[market] funder_kind lookup failed for ${ticker}:`, err);
+  }
+
+  const firstKind: FunderKind = cachedKind ?? guessFunderKind(ticker);
+  const secondKind: FunderKind = firstKind === 'seco' ? 'fundo' : 'seco';
+
+  let points = await fetchFunderHistorical(ticker, firstKind, from, to);
+  let usedKind: FunderKind = firstKind;
+
+  if (points.length === 0 && cachedKind === null) {
+    // Heuristic miss — try the other endpoint once.
+    points = await fetchFunderHistorical(ticker, secondKind, from, to);
+    usedKind = secondKind;
+  }
+
+  if (points.length === 0) return null;
+
+  if (cachedKind !== usedKind) {
+    persistFunderKind(ticker, usedKind);
+  }
+
+  return points;
+}
+
+/**
+ * Fire-and-forget upsert of `funder_kind` onto the `securities` row.
+ * Mirrors the display-name caching pattern in `upsertSecurityName`.
+ */
+function persistFunderKind(ticker: string, kind: FunderKind): void {
+  prisma.security
+    .upsert({
+      where: { ticker },
+      // `market` and `currency` are required on Security; for a brand-new row
+      // we know it's TASE/ILS since funder only covers TASE. `name` defaults
+      // to the ticker and gets overwritten the next time the latest-price
+      // pipeline runs and calls upsertSecurityName.
+      create: {
+        ticker,
+        name: ticker,
+        market: 'TASE',
+        currency: 'ILS',
+        funderKind: kind,
+      },
+      update: { funderKind: kind },
+    })
+    .catch((err) =>
+      console.warn(`[market] Failed to persist funder_kind for ${ticker}:`, err),
+    );
 }
 
 /**
@@ -475,30 +569,33 @@ export async function getHistoricalPrices(
 ): Promise<HistoricalPriceResult> {
   const yahooSymbol = resolveYahooSymbol(ticker, market);
 
-  // Unmapped TASE — no historical source available (TheMarker is quote-only).
-  if (market === 'TASE' && !yahooSymbol) {
-    return { available: false, reason: 'unmapped_tase' };
-  }
-
   // 1) Read DB cache for the requested range.
   const cached = await priceHistory.readRange(ticker, from, to);
 
-  // 2) Coverage check — decide whether the cache has a tail gap to fill.
+  // 2) Coverage check — refill if either the head (earliest cached > requested
+  // `from`) or the tail (today > newest cached) has a real gap. The head check
+  // matters when a previous fetch was bounded to a narrower window than what
+  // the current caller wants (e.g., chart asks from first-buy-date, but the
+  // cache only has the last year). When either gap fires we refetch the full
+  // [from, to] range — bulkInsert dedupes via skipDuplicates, and funder
+  // ignores date params anyway and always returns the full history.
   const today = new Date();
   const newestNeeded = to < today ? to : today;
   let upstreamFrom: Date | null = null;
   if (cached.length === 0) {
     upstreamFrom = from;
   } else {
+    const earliestCached = cached[0].date;
     const newestCached = cached[cached.length - 1].date;
-    const gapDays = (newestNeeded.getTime() - newestCached.getTime()) / ONE_DAY_MS;
-    if (gapDays > COVERAGE_TOLERANCE_DAYS) {
-      upstreamFrom = new Date(newestCached.getTime() + ONE_DAY_MS);
+    const tailGapDays = (newestNeeded.getTime() - newestCached.getTime()) / ONE_DAY_MS;
+    const headGapDays = (earliestCached.getTime() - from.getTime()) / ONE_DAY_MS;
+    if (tailGapDays > COVERAGE_TOLERANCE_DAYS || headGapDays > COVERAGE_TOLERANCE_DAYS) {
+      upstreamFrom = from;
     }
   }
 
   // 3) Upstream fetch only if there's a gap.
-  let fetched: { source: 'yahoo' | 'stooq'; points: HistoricalPricePoint[] } | null = null;
+  let fetched: { source: 'yahoo' | 'stooq' | 'funder'; points: HistoricalPricePoint[] } | null = null;
   let upstreamAttempted = false;
   if (upstreamFrom) {
     upstreamAttempted = true;
@@ -535,6 +632,11 @@ export async function getHistoricalPrices(
   const points = Array.from(byDate.values()).sort((a, b) => a.date.localeCompare(b.date));
 
   if (points.length === 0) {
+    // No cache, no upstream data. For TASE this means even funder returned
+    // nothing — treat as a true "no source available" condition.
+    if (market === 'TASE' && !yahooSymbol) {
+      return { available: false, reason: 'unmapped_tase' };
+    }
     return { available: false, reason: 'fetch_failed' };
   }
 
@@ -547,12 +649,16 @@ export async function getHistoricalPrices(
   // Resolve the top-level source: prefer the freshly-fetched source if we
   // called upstream, otherwise fall back to the source of the most recent
   // cached row. Default to 'yahoo' if neither is conclusive.
-  let source: 'yahoo' | 'stooq' = 'yahoo';
+  let source: 'yahoo' | 'stooq' | 'funder' = 'yahoo';
   if (fetched) {
     source = fetched.source;
   } else if (cached.length > 0) {
     const lastSource = cached[cached.length - 1].source;
-    source = lastSource === 'stooq' ? 'stooq' : 'yahoo';
+    if (lastSource === 'stooq' || lastSource === 'funder') {
+      source = lastSource;
+    } else {
+      source = 'yahoo';
+    }
   }
 
   return { available: true, source, points };

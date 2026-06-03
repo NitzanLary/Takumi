@@ -117,6 +117,7 @@ model Security {
   yahooSymbol     String? @map("yahoo_symbol")
   industry        String?
   marketCapBucket String? @map("market_cap_bucket")
+  funderKind      String? @map("funder_kind") // 'seco' | 'fundo' — TASE only, lazily cached on first funder fetch
 
   @@map("securities")
 }
@@ -195,7 +196,7 @@ model PriceHistory {
   ticker    String
   date      DateTime
   close     Decimal
-  source    String   // 'yahoo' | 'stooq'
+  source    String   // 'yahoo' | 'stooq' | 'funder'
   fetchedAt DateTime @default(now()) @map("fetched_at")
 
   @@unique([ticker, date])

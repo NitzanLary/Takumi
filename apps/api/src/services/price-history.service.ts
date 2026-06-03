@@ -33,7 +33,7 @@ export async function readRange(
 
 export async function bulkInsert(
   ticker: string,
-  rows: Array<{ date: Date; close: number; source: 'yahoo' | 'stooq' }>,
+  rows: Array<{ date: Date; close: number; source: 'yahoo' | 'stooq' | 'funder' }>,
 ): Promise<{ inserted: number }> {
   if (rows.length === 0) return { inserted: 0 };
   const result = await prisma.priceHistory.createMany({
