@@ -93,9 +93,27 @@ async function buildDailySeries(
   userId: string,
   window: EquityCurveWindow,
 ): Promise<DailyWalkResult> {
-  const trades = await prisma.trade.findMany({
+  const rawTrades = await prisma.trade.findMany({
     where: { userId },
     orderBy: [{ tradeDate: 'asc' }, { createdAt: 'asc' }],
+  });
+
+  // Within a single tradeDate, IBI's XLSX `createdAt` order doesn't reflect
+  // the real intra-day cash flow — e.g., a CONVERSION that funded a same-day
+  // BUY may appear AFTER the BUY in the export. Process cash inflows first
+  // so the BUY sees the deposit/conversion that funded it, avoiding spurious
+  // implicit-deposit shortfalls.
+  const CASH_IN_PRIORITY = new Set([
+    'TRANSFER', 'DEPOSIT', 'CONVERSION', 'CREDIT',
+    'SELL', 'DIVIDEND', 'INTEREST',
+  ]);
+  const trades = rawTrades.slice().sort((a, b) => {
+    const dateCmp = a.tradeDate.getTime() - b.tradeDate.getTime();
+    if (dateCmp !== 0) return dateCmp;
+    const aIn = CASH_IN_PRIORITY.has(a.direction) ? 0 : 1;
+    const bIn = CASH_IN_PRIORITY.has(b.direction) ? 0 : 1;
+    if (aIn !== bIn) return aIn - bIn;
+    return a.createdAt.getTime() - b.createdAt.getTime();
   });
 
   if (trades.length === 0) {
@@ -234,32 +252,28 @@ function applyTrade(trade: Trade, state: WalkState, fxMap: Map<string, number>):
   switch (trade.direction) {
     case 'BUY': {
       state.holdings.set(ticker, (state.holdings.get(ticker) ?? 0) + qty);
-      // Cash-deduct with implicit-deposit fallback: if cash would go negative,
-      // top up the shortfall and credit it to externalCapitalIls. This handles
-      // legacy users whose pre-import history lacks explicit DEPOSIT rows —
-      // every funded BUY shows up as an implicit deposit. For users with proper
-      // DEPOSIT trades, the branch is a no-op (cash already covers the BUY).
+      // IBI's XLSX stores signed proceeds: negative for BUY (cash outflow).
+      // `+=` the signed delta so the sign does the right thing. The fallback
+      // (when proceeds aren't on the row) is the unsigned cost — explicitly
+      // negated to match the convention.
+      //
+      // Cash is allowed to go negative — IBI lets you buy on T+1 settlement
+      // (e.g., BUY today, the funding CONVERSION clears tomorrow), so a
+      // transient negative balance is normal and self-corrects. Adding a
+      // phantom "implicit deposit" here would double-count: the real
+      // CONVERSION/TRANSFER follows in the data.
       if (currency === 'USD') {
-        const cost = proceedsFx ?? qty * price + commission;
-        if (cost > state.cashUsd) {
-          const shortfall = cost - state.cashUsd;
-          state.cashUsd += shortfall;
-          state.externalCapitalIls += shortfall * fxOnDate;
-        }
-        state.cashUsd -= cost;
+        const delta = proceedsFx ?? -(qty * price + commission);
+        state.cashUsd += delta;
       } else {
-        const cost = proceedsIls ?? qty * price + commission;
-        if (cost > state.cashIls) {
-          const shortfall = cost - state.cashIls;
-          state.cashIls += shortfall;
-          state.externalCapitalIls += shortfall;
-        }
-        state.cashIls -= cost;
+        const delta = proceedsIls ?? -(qty * price + commission);
+        state.cashIls += delta;
       }
       break;
     }
     case 'SELL': {
       state.holdings.set(ticker, (state.holdings.get(ticker) ?? 0) - qty);
+      // SELL proceeds are positive (inflow) — `+=` is already correct.
       if (currency === 'USD') {
         const proceeds = proceedsFx ?? Math.max(0, qty * price - commission);
         state.cashUsd += proceeds;
@@ -282,15 +296,16 @@ function applyTrade(trade: Trade, state: WalkState, fxMap: Map<string, number>):
       break;
     }
     case 'TAX': {
-      if (currency === 'USD' && proceedsFx != null) state.cashUsd -= proceedsFx;
-      else if (proceedsIls != null) state.cashIls -= proceedsIls;
+      // TAX proceeds are signed-negative outflows. `+=` adds a negative to
+      // subtract from cash.
+      if (currency === 'USD' && proceedsFx != null) state.cashUsd += proceedsFx;
+      else if (proceedsIls != null) state.cashIls += proceedsIls;
       break;
     }
     case 'FEE': {
-      const usdAmount = proceedsFx ?? 0;
-      const ilsAmount = proceedsIls ?? 0;
-      if (currency === 'USD' && usdAmount > 0) state.cashUsd -= usdAmount;
-      else if (ilsAmount > 0) state.cashIls -= ilsAmount;
+      // FEE proceeds are signed-negative outflows. `+=` does the right thing.
+      if (currency === 'USD' && proceedsFx != null) state.cashUsd += proceedsFx;
+      else if (proceedsIls != null) state.cashIls += proceedsIls;
       break;
     }
     case 'DEPOSIT': {
@@ -318,19 +333,23 @@ function applyTrade(trade: Trade, state: WalkState, fxMap: Map<string, number>):
       break;
     }
     case 'CONVERSION': {
-      // B USD/ILS — buy USD with ILS. Only treat as FX if both legs are populated;
-      // otherwise it's a ticker-conversion corporate-action row with no cash impact.
-      if (proceedsIls != null && proceedsFx != null) {
-        state.cashIls -= proceedsIls;
-        state.cashUsd += proceedsFx;
+      // B USD/ILS — buy USD with ILS. IBI stores the ILS leg as a signed
+      // outflow on proceedsIls (negative), and the USD amount on `quantity`
+      // (proceedsFx is often 0 in IBI's export). We gate on the conventional
+      // FX ticker so we don't catch ticker-rename corporate-action rows or
+      // admin/tax pseudo-trades that share this direction code.
+      if (ticker === 'USD/ILS' && proceedsIls != null) {
+        state.cashIls += proceedsIls;
+        state.cashUsd += qty;
       }
       break;
     }
     case 'CREDIT': {
-      // S USD/ILS — sell USD for ILS.
-      if (proceedsIls != null && proceedsFx != null) {
+      // S USD/ILS — sell USD for ILS. ILS leg is a positive inflow on
+      // proceedsIls; USD leg is on `quantity` (USD sold). Same FX-ticker gate.
+      if (ticker === 'USD/ILS' && proceedsIls != null) {
         state.cashIls += proceedsIls;
-        state.cashUsd -= proceedsFx;
+        state.cashUsd -= qty;
       }
       break;
     }
