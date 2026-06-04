@@ -243,28 +243,36 @@ async function execGetRiskReport(userId: string): Promise<unknown> {
   const narratives: string[] = [];
 
   // Herfindahl interpretation
-  if (metrics.herfindahlIndex > 0.25) {
-    narratives.push(`Your portfolio is highly concentrated (HHI: ${(metrics.herfindahlIndex * 100).toFixed(0)}%). Consider diversifying.`);
-  } else if (metrics.herfindahlIndex > 0.15) {
-    narratives.push(`Your portfolio has moderate concentration (HHI: ${(metrics.herfindahlIndex * 100).toFixed(0)}%).`);
-  } else {
-    narratives.push(`Your portfolio is well-diversified (HHI: ${(metrics.herfindahlIndex * 100).toFixed(0)}%).`);
+  if (metrics.herfindahlIndex != null) {
+    const hhi = metrics.herfindahlIndex;
+    if (hhi > 0.25) {
+      narratives.push(`Your portfolio is highly concentrated (HHI: ${(hhi * 100).toFixed(0)}%). Consider diversifying.`);
+    } else if (hhi > 0.15) {
+      narratives.push(`Your portfolio has moderate concentration (HHI: ${(hhi * 100).toFixed(0)}%).`);
+    } else {
+      narratives.push(`Your portfolio is well-diversified (HHI: ${(hhi * 100).toFixed(0)}%).`);
+    }
   }
 
-  // Drawdown
-  if (metrics.maxDrawdown < -0.2) {
-    narratives.push(`Maximum drawdown of ${(metrics.maxDrawdown * 100).toFixed(1)}% is significant. Consider position sizing.`);
-  } else if (metrics.maxDrawdown < -0.1) {
-    narratives.push(`Maximum drawdown of ${(metrics.maxDrawdown * 100).toFixed(1)}% is within normal range.`);
-  }
-
-  // Sharpe
-  if (metrics.sharpeRatio > 1) {
-    narratives.push(`Sharpe ratio of ${metrics.sharpeRatio.toFixed(2)} indicates strong risk-adjusted returns.`);
-  } else if (metrics.sharpeRatio > 0) {
-    narratives.push(`Sharpe ratio of ${metrics.sharpeRatio.toFixed(2)} indicates positive but modest risk-adjusted returns.`);
+  // Time-series metrics (drawdown + Sharpe) require enough price history — they go null together.
+  if (metrics.maxDrawdown == null || metrics.sharpeRatio == null) {
+    narratives.push(`Not enough price history (${metrics.dataPoints} daily snapshots; need at least 10) to compute drawdown and risk-adjusted return ratios.`);
   } else {
-    narratives.push(`Sharpe ratio of ${metrics.sharpeRatio.toFixed(2)} indicates returns are not compensating for the risk taken.`);
+    // Drawdown
+    if (metrics.maxDrawdown < -0.2) {
+      narratives.push(`Maximum drawdown of ${(metrics.maxDrawdown * 100).toFixed(1)}% is significant. Consider position sizing.`);
+    } else if (metrics.maxDrawdown < -0.1) {
+      narratives.push(`Maximum drawdown of ${(metrics.maxDrawdown * 100).toFixed(1)}% is within normal range.`);
+    }
+
+    // Sharpe
+    if (metrics.sharpeRatio > 1) {
+      narratives.push(`Sharpe ratio of ${metrics.sharpeRatio.toFixed(2)} indicates strong risk-adjusted returns.`);
+    } else if (metrics.sharpeRatio > 0) {
+      narratives.push(`Sharpe ratio of ${metrics.sharpeRatio.toFixed(2)} indicates positive but modest risk-adjusted returns.`);
+    } else {
+      narratives.push(`Sharpe ratio of ${metrics.sharpeRatio.toFixed(2)} indicates returns are not compensating for the risk taken.`);
+    }
   }
 
   // Top concentration
@@ -286,9 +294,9 @@ async function execGetRiskReport(userId: string): Promise<unknown> {
     topConcentration: metrics.topConcentration,
     narrative: narratives.join(' '),
     suggestions: [
-      metrics.herfindahlIndex > 0.25 ? 'Consider adding positions in underrepresented sectors.' : null,
-      metrics.maxDrawdown < -0.15 ? 'Consider implementing stop-loss rules to limit drawdown.' : null,
-      metrics.sharpeRatio < 0.5 ? 'Review your entry/exit timing — risk is not being adequately rewarded.' : null,
+      metrics.herfindahlIndex != null && metrics.herfindahlIndex > 0.25 ? 'Consider adding positions in underrepresented sectors.' : null,
+      metrics.maxDrawdown != null && metrics.maxDrawdown < -0.15 ? 'Consider implementing stop-loss rules to limit drawdown.' : null,
+      metrics.sharpeRatio != null && metrics.sharpeRatio < 0.5 ? 'Review your entry/exit timing — risk is not being adequately rewarded.' : null,
     ].filter(Boolean),
   };
 }
