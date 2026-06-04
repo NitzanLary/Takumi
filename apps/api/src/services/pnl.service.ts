@@ -9,6 +9,7 @@
 import type { PnlWindow } from '@takumi/types';
 import { prisma } from '../lib/db.js';
 import { getCurrentRate } from './exchange-rate.service.js';
+import { logger } from '../lib/logger.js';
 
 export interface MatchedLot {
   ticker: string;
@@ -357,7 +358,7 @@ export async function getPnlByMarket(
   try {
     usdIlsRate = await getCurrentRate();
   } catch (err) {
-    console.warn('[pnl.service] getPnlByMarket: no FX rate available, USD→ILS conversion will pass through 1:1', err);
+    logger.warn({ module: 'pnl.service', err }, 'getPnlByMarket: no FX rate available, USD→ILS conversion will pass through 1:1');
   }
 
   const byMarket = new Map<

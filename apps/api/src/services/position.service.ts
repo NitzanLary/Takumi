@@ -10,6 +10,7 @@ import { runFifoMatching, type OpenLot } from './pnl.service.js';
 import { getLatestPrices } from './market.service.js';
 import { getCurrentRate } from './exchange-rate.service.js';
 import { prisma } from '../lib/db.js';
+import { logger } from '../lib/logger.js';
 import type { PriceSource } from '@takumi/types';
 
 export interface OpenPosition {
@@ -67,7 +68,7 @@ export async function getOpenPositions(userId: string): Promise<OpenPosition[]> 
   const [prices, usdIlsRate, securities] = await Promise.all([
     getLatestPrices(tickerInfos),
     getCurrentRate().catch(() => {
-      console.warn('[positions] No USD/ILS rate available; USD positions will not be weighted correctly');
+      logger.warn({ module: 'positions' }, 'No USD/ILS rate available; USD positions will not be weighted correctly');
       return 1;
     }),
     tickerList.length > 0

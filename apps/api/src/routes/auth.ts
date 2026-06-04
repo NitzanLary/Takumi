@@ -15,6 +15,7 @@ import { prisma } from '../lib/db.js';
 import { config } from '../lib/config.js';
 import { sendVerificationEmail, sendPasswordResetEmail } from '../services/email.service.js';
 import { requireAuth, SESSION_COOKIE, hashSessionToken } from '../middleware/require-auth.js';
+import { logger } from '../lib/logger.js';
 
 const router = Router();
 
@@ -233,7 +234,7 @@ router.post('/resend-verification', async (req, res) => {
     try {
       await sendVerificationEmail(user.email, token);
     } catch (err) {
-      console.error('[auth/resend] Failed:', err);
+      logger.error({ module: 'auth/resend', err }, 'Failed to send verification email');
     }
   }
   res.json({ ok: true });
@@ -330,7 +331,7 @@ router.post('/forgot-password', async (req, res) => {
     try {
       await sendPasswordResetEmail(user.email, token);
     } catch (err) {
-      console.error('[auth/forgot-password] Failed:', err);
+      logger.error({ module: 'auth/forgot-password', err }, 'Failed to send password reset email');
     }
   }
   res.json({ ok: true });

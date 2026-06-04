@@ -13,6 +13,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Request, Response } from 'express';
 import { config } from '../lib/config.js';
+import { logger } from '../lib/logger.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import {
   getOrCreateConversation,
@@ -288,6 +289,7 @@ export async function handleChatStream(
               result = { error: 'No tool executor registered' };
             }
           } catch (err) {
+            logger.error({ module: 'chat', userId, tool: tc.name, err }, 'Tool execution failed');
             result = { error: `Tool execution failed: ${(err as Error).message}` };
           }
           return { tc, result };
@@ -331,6 +333,7 @@ export async function handleChatStream(
       conversationId: conversation.id,
     });
   } catch (err) {
+    logger.error({ module: 'chat', userId, err }, 'Chat handler error');
     const message =
       err instanceof Anthropic.APIError
         ? `Claude API error: ${err.message}`

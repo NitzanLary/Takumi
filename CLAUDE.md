@@ -1,364 +1,187 @@
 # Takumi — Personal Trading Intelligence Platform
 
-> **IMPORTANT: Keep this file updated.** Whenever you add new packages, change project structure, modify conventions, add services, create new routes/pages, or shift architectural decisions — update the relevant section of this file immediately so future sessions have accurate context. This is a mandatory part of every task.
+> **Keep this file updated.** When you change structure, conventions, services, routes, or architecture, update the relevant section so future sessions have accurate context.
 
 ## What This Is
 
-A multi-user web app for independent investors trading Israeli (TASE) and US (NYSE/NASDAQ) equities through IBI broker. Transactions are imported from IBI's XLSX exports. Provides analytics dashboards and a persistent AI chat agent powered by Claude. All data is per-user — trades, positions, alerts, and conversations are scoped by `user_id`.
+A multi-user web app for independent investors trading Israeli (TASE) and US equities through IBI broker. Transactions are imported from IBI XLSX exports. Provides analytics dashboards and a persistent AI chat agent powered by Claude. All data is per-user — scoped by `user_id`.
 
-The full PRD is in `Takumi_PRD.md` at the project root — refer to it for detailed requirements, agent tool definitions (25 tools across 3 tiers), alert types, data enrichment strategy, and example conversations.
+Full PRD in `Takumi_PRD.md`. Remaining work (alert engine, Tier 3 enrichment, hardening) is tracked in **GitHub issues**, not here — this doc describes the system as it exists today.
+
+## Working Guidelines
+
+> Adapted from [andrej-karpathy-skills](https://github.com/multica-ai/andrej-karpathy-skills). Bias toward caution over speed; use judgment on trivial tasks.
+
+1. **Think before coding** — state assumptions, surface tradeoffs, ask when unclear instead of guessing silently.
+2. **Simplicity first** — minimum code that solves the stated problem; no speculative features, abstractions, or error handling for impossible cases.
+3. **Surgical changes** — touch only what the request needs; match existing style; don't refactor what isn't broken; only remove orphans your change created.
+4. **Goal-driven execution** — turn the task into a verifiable success criterion and loop until verified.
 
 ## Architecture
 
 ```
-Browser  →  Next.js web (session cookie gate)  →  rewrites /api/*  →  Express API (private)  →  Postgres
-                                                                                ↕
-                                                                         Anthropic Claude API
-                                                                                ↕
-                                                                         Resend (transactional email)
+Browser → Next.js web (session cookie gate) → rewrites /api/* → Express API (private) → Postgres
+                                                      ↕
+                                       Anthropic Claude API · Resend (email)
 ```
 
-- **Frontend** calls relative `/api/*` URLs. Next.js rewrites them server-side to the API service (via `API_URL` env var). The browser never sees the API origin directly. `src/middleware.ts` redirects unauthenticated requests to `/login` (checked via presence of `takumi_session` cookie).
-- **Express** is the single gateway. All routes except `/api/health` and `/api/auth/*` require a valid session (enforced by `requireAuth` middleware). `req.user.id` is set on every authenticated request — services accept `userId` as their first argument and every Prisma query scopes by it.
-- **Auth** — email + password. Passwords hashed with bcrypt (cost 12). Session tokens are 32-byte random strings, stored as SHA-256 hashes in the `sessions` table. Cookie is httpOnly, Secure (prod), SameSite=Lax, 30-day rolling expiry. Verification + password-reset tokens live in `verification_tokens`. **Email verification is currently disabled** (no verified Resend sending domain yet — see "External Services"): signup auto-sets `emailVerifiedAt`, creates a session and logs the user in directly; login and `requireAuth` no longer gate on verification. The verify/reset-password endpoints and pages are still in the codebase and will work again once a domain is verified and `EMAIL_FROM` is pointed at it — the "Forgot?" link on the login page has been hidden in the meantime.
-- **Data import** — XLSX files exported from IBI are uploaded via the `/import` page and parsed by `xlsx-import.service.ts`.
-- **Database** — Prisma schema is PostgreSQL. Dev and prod both use Postgres (Railway for prod).
+- **Frontend** calls relative `/api/*`; Next.js rewrites server-side to `API_URL`. Browser never sees the API origin. `src/middleware.ts` redirects unauthenticated requests to `/login` (checks `takumi_session` cookie).
+- **Express** is the single gateway. All routes except `/api/health` and `/api/auth/*` require a session (`requireAuth`); `req.user.id` is set on every authed request and every service scopes Prisma queries by it.
+- **Auth** — email+password, bcrypt cost 12. Session tokens are 32-byte randoms stored as SHA-256 hashes in `sessions`; httpOnly cookie, 30-day rolling expiry. **Email verification is currently disabled** (no verified Resend domain): signup auto-verifies and logs in; verify/reset endpoints remain in code for when a domain is configured.
+- **Database** — Postgres (Railway for prod), Prisma ORM.
 
 ## Monorepo Structure
 
-```
-takumi/
-├── apps/
-│   ├── web/                  # Next.js 14, App Router, Tailwind, TanStack Query
-│   │   └── src/
-│   │       ├── app/          # Pages: dashboard, positions, positions/[ticker], history, analytics, import, alerts, settings, login, signup, verify-email, forgot-password, reset-password. Plus app/api/chat/route.ts — Node Route Handler that proxies SSE for /api/chat (bypasses next.config.mjs rewrites so chunks flush per-event).
-│   │       ├── middleware.ts # Session-cookie gate; redirects to /login when unauthenticated
-│   │       ├── components/   # Providers.tsx, UserProvider.tsx, layout/AppShell.tsx, layout/Sidebar.tsx, layout/TopBar.tsx (with UserMenu), auth/AuthCard.tsx, ai/ChatDrawer.tsx, ai/MessageBubble.tsx, ai/ChatInput.tsx, ai/QuickActions.tsx, stock/StockHeader.tsx, stock/OverviewTab.tsx, stock/TradesTab.tsx, stock/RoundTripsTab.tsx, stock/DividendsFeesTab.tsx, stock/StockChart.tsx, profile/InvestorProfileForm.tsx, profile/OnboardingModal.tsx
-│   │       ├── stores/       # chat-store.ts, ui-store.ts
-│   │       └── lib/          # api-client.ts (401→/login redirect), formatters.ts, sse-client.ts
-│   └── api/                  # Express 5, TypeScript, Prisma
-│       └── src/
-│           ├── index.ts      # App entry — registers auth router (public) + requireAuth + resource routers
-│           ├── routes/       # auth.ts, trades.ts, sync.ts, positions.ts, analytics.ts, market.ts, exchange-rates.ts, stock.ts, chat.ts
-│           ├── services/     # trade.service.ts, sync.service.ts, xlsx-import.service.ts, pnl.service.ts, position.service.ts, analytics.service.ts, market.service.ts, themarker.service.ts, stooq.service.ts, exchange-rate.service.ts, equity-curve.service.ts, risk.service.ts, whatif.service.ts, alt-investment.service.ts, stock-detail.service.ts, email.service.ts
-│           ├── data/         # tase-ticker-map.json, sector-map.json
-│           ├── middleware/   # error-handler.ts, require-auth.ts
-│           ├── lib/          # config.ts, db.ts
-│           └── ai/           # system-prompt.ts, chat-handler.ts, conversation.service.ts, tools/ (core-tools.ts, tier1-tools.ts, tier2-tools.ts, index.ts)
-├── packages/
-│   ├── db/                   # Prisma schema + client (shared via @takumi/db)
-│   │   └── prisma/schema.prisma
-│   └── types/                # Shared TypeScript interfaces (shared via @takumi/types)
-│       └── src/              # trade.ts, sync.ts, position.ts, alert.ts, analytics.ts, api.ts, market.ts, stock.ts
-├── scripts/
-│   ├── dev.sh                # Start API + frontend
-│   ├── seed.ts               # Populate DB with 12 sample trades
-│   └── bootstrap-users.ts    # One-time: create primary user from BOOTSTRAP_USER_EMAIL/PASSWORD and backfill user_id on legacy rows. Idempotent.
-├── .env                      # Local secrets (never committed)
-├── .env.example              # Template with all required vars
-└── Takumi_PRD.md             # Full product requirements document
-```
+pnpm workspaces + turbo.
 
-**Package manager:** pnpm (workspaces) + turbo for orchestration.
+```
+apps/
+  web/   # Next.js 14, App Router, Tailwind, TanStack Query
+    src/app/         # Pages (see Frontend Pages) + api/chat/route.ts (SSE proxy, bypasses rewrites)
+    src/components/  # layout/, auth/, ai/ (ChatDrawer, MessageBubble, ChatInput…), stock/, dashboard/, profile/
+    src/stores/      # chat-store.ts, ui-store.ts
+    src/lib/         # api-client.ts (401→/login), formatters.ts, sse-client.ts
+  api/   # Express 5, TypeScript, Prisma
+    src/index.ts     # auth router (public) + requireAuth + resource routers
+    src/routes/      # auth, trades, sync, positions, analytics, market, exchange-rates, stock, chat
+    src/services/    # trade, sync, xlsx-import, pnl, position, analytics, market, themarker, stooq, funder,
+                     #   exchange-rate, equity-curve, risk, whatif, alt-investment, stock-detail, email
+    src/data/        # tase-ticker-map.json, sector-map.json
+    src/ai/          # system-prompt, chat-handler, conversation.service, tools/ (core, tier1, tier2)
+packages/
+  db/      # Prisma schema + client (@takumi/db singleton)
+  types/   # Shared TS interfaces (@takumi/types)
+scripts/   # dev.sh, seed.ts, bootstrap-users.ts (one-time primary-user backfill, idempotent)
+```
 
 ## Key Commands
 
 ```bash
-# Start everything
-bash scripts/dev.sh
-
-# Start individual services
-pnpm --filter @takumi/api dev          # Express API on :3001
-pnpm --filter @takumi/web dev          # Next.js on :3000
-
-# Database
-pnpm --filter @takumi/db db:generate   # Regenerate Prisma client
-pnpm --filter @takumi/db db:push       # Push schema to SQLite
-DATABASE_URL="file:/home/nitzan/Takumi/packages/db/prisma/takumi.db" pnpm --filter @takumi/api exec tsx ../../scripts/seed.ts
+bash scripts/dev.sh                      # start API + web
+pnpm --filter @takumi/api dev            # Express on :3001
+pnpm --filter @takumi/web dev            # Next.js on :3000
+pnpm --filter @takumi/db db:generate     # regenerate Prisma client
+pnpm --filter @takumi/db db:push         # push schema
 ```
 
 ## Environment Variables
 
-All secrets live in `.env` at project root. The API loads it via `dotenv` in `apps/api/src/lib/config.ts`. Required variables:
+`.env` at project root, loaded via `dotenv` in `apps/api/src/lib/config.ts`.
 
 | Variable | Purpose |
 |---|---|
 | `DATABASE_URL` | Postgres connection string |
 | `ANTHROPIC_API_KEY` | Claude API key |
-| `API_PORT` / `WEB_PORT` | Express (:3001) and Next.js (:3000) ports |
-| `APP_URL` | Public URL of the web app — embedded into verification + password-reset email links |
-| `RESEND_API_KEY` | Resend transactional email API key. Unset = email sends become console logs (fine for dev). |
-| `EMAIL_FROM` | From address used by Resend (e.g. `"Takumi <onboarding@resend.dev>"`) |
-| `AUTH_DEV_BYPASS_USER_ID` | **Dev-only.** If set, `requireAuth` resolves this user without session lookup. Never set in prod. |
-| `BOOTSTRAP_USER_EMAIL` / `BOOTSTRAP_USER_PASSWORD` | Consumed only by `scripts/bootstrap-users.ts` (one-time migration to backfill the primary user). |
+| `API_PORT` / `WEB_PORT` | Express (:3001) / Next.js (:3000) ports |
+| `APP_URL` | Public web URL — embedded in verification/reset email links |
+| `RESEND_API_KEY` | Resend email key. Unset = email sends become console logs. |
+| `EMAIL_FROM` | Resend from address |
+| `AUTH_DEV_BYPASS_USER_ID` | **Dev-only.** `requireAuth` resolves this user without a session. Never set in prod. |
+| `BOOTSTRAP_USER_EMAIL` / `BOOTSTRAP_USER_PASSWORD` | Consumed only by `bootstrap-users.ts`. |
 
 ## Database
 
-Schema in `packages/db/prisma/schema.prisma`. PostgreSQL provider, Prisma ORM.
+Schema in `packages/db/prisma/schema.prisma` (Postgres). All monetary fields use `Decimal`. **12 tables:**
 
-**Tables (12 total):**
-
-| Table | Purpose | Key Notes |
-|---|---|---|
-| `users` | Accounts | Unique on `email`. Columns: `password_hash` (bcrypt cost 12), `email_verified_at`, `display_name`, `currency_pref`, `cost_basis_method`, `investor_horizon`, `investor_goal`, `investor_notes`, `investor_profile_updated_at`, timestamps. |
-| `sessions` | Active login sessions | `token_hash` = SHA-256 of the opaque cookie value. 30-day expiry with rolling refresh on activity. Cascades on user delete. |
-| `verification_tokens` | Email-verify + password-reset tokens | `purpose` ∈ {`email_verify`, `password_reset`}. `token_hash`, `expires_at`, `consumed_at`. Indexed by `(userId, purpose)`. |
-| `trades` | All transaction records (trades + non-trades) | Unique on `(userId, tradeId, source)`. `user_id` FK cascades. `direction` field: BUY/SELL for core trades; DIVIDEND, TAX, FEE, TRANSFER, CONVERSION, CREDIT, DEPOSIT, WITHDRAWAL, SPLIT for non-trades. Extra fields: `proceeds_fx`, `proceeds_ils`, `capital_gains_tax`. All services filter to BUY/SELL by default and scope by `userId`. |
-| `securities` | Security reference data (shared across users) | Unique on `ticker`. Extended with `yahoo_symbol`, `industry`, `market_cap_bucket` (Phase 3). |
-| `sync_log` | Import run history | Per-user. Indexed by `(userId, synced_at DESC)`. Has `file_name` column for tracking imported XLSX filenames. |
-| `alerts` | Price/P&L/duration alerts | Per-user. 6 types: price_drop, price_target, holding_duration, portfolio_pnl, sync_failure, inactivity |
-| `market_prices` | Cached market prices (shared) | Indexed by `(ticker, fetched_at DESC)`. |
-| `exchange_rates` | Daily ILS/USD rates (shared) | Unique on `date` |
-| `price_history` | Daily historical close prices (shared) | Unique on `(ticker, date)`. Close-only for v1; OHLCV extension deferred to Phase 5 (technical indicators). Populated lazily by `market.service.getHistoricalPrices`. |
-| `ai_conversations` | Chat sessions | Per-user, indexed by `(userId, updatedAt)`. Has many `ai_messages`. |
-| `ai_messages` | Individual chat messages | Role: user/assistant/tool; optional `tool_calls` JSON. Scoped by conversation (which is per-user). |
-
-All monetary fields use `Decimal` (not Float). The legacy `user_preferences` singleton table was dropped in Commit B — per-user prefs now live on `users.currency_pref` / `users.cost_basis_method`.
+| Table | Purpose / Key Notes |
+|---|---|
+| `users` | Accounts. `password_hash`, `email_verified_at`, `display_name`, `currency_pref`, `cost_basis_method`, investor-profile fields. |
+| `sessions` | `token_hash` = SHA-256 of cookie. 30-day rolling expiry, cascades on user delete. |
+| `verification_tokens` | Email-verify + password-reset. `purpose ∈ {email_verify, password_reset}`. |
+| `trades` | All transactions. Unique `(userId, tradeId, source)`. `direction`: BUY/SELL (core) + DIVIDEND/TAX/FEE/TRANSFER/CONVERSION/… Services filter to BUY/SELL and scope by `userId`. Extra: `proceeds_fx`, `proceeds_ils`, `capital_gains_tax`. |
+| `securities` | Shared reference data. Unique `ticker`. Has `yahoo_symbol`, `industry`, `market_cap_bucket`, `funder_kind`. |
+| `sync_log` | Per-user import history; has `file_name`. |
+| `alerts` | Per-user. 6 types: price_drop, price_target, holding_duration, portfolio_pnl, sync_failure, inactivity. |
+| `market_prices` | Shared cached quotes. `volume` is `BigInt`. Has dayChange/dayChangePct/high52w/low52w. |
+| `exchange_rates` | Shared daily ILS/USD. Unique `date`. |
+| `price_history` | Shared daily closes (close-only). Unique `(ticker, date)`. Populated lazily by `market.service.getHistoricalPrices`. |
+| `ai_conversations` / `ai_messages` | Per-user chat sessions + messages (role user/assistant/tool, optional `tool_calls`). |
 
 ## API Routes (Express)
 
-All routes except `/api/health` and `/api/auth/*` require a valid session cookie. `requireAuth` middleware sets `req.user = { id, email }`.
+All except `/api/health` and `/api/auth/*` need a session.
 
-| Method | Route | Handler | Purpose |
-|---|---|---|---|
-| GET | `/api/health` | inline | Health check (public) |
-| POST | `/api/auth/signup` | auth.ts | Create account (email+password+optional displayName). Auto-verifies + issues a session cookie (email verification currently disabled). |
-| POST | `/api/auth/login` | auth.ts | Exchange email+password for session cookie. |
-| POST | `/api/auth/logout` | auth.ts | Delete session row and clear cookie |
-| GET | `/api/auth/me` | auth.ts | Current user (used by UserProvider to bootstrap) |
-| POST | `/api/auth/verify-email` | auth.ts | Consume verification token |
-| POST | `/api/auth/resend-verification` | auth.ts | Re-send verification email (always 200 to avoid user enumeration) |
-| POST | `/api/auth/forgot-password` | auth.ts | Issue reset token, send email (always 200) |
-| POST | `/api/auth/reset-password` | auth.ts | Consume reset token, set new password, invalidate existing sessions |
-| PUT | `/api/auth/profile` | auth.ts | Update investor profile (horizon, goal, notes). Sets `investor_profile_updated_at`. Accepts partial updates; explicit `null` clears a field. |
-| GET | `/api/trades` | trades.ts | List trades (paginated, filterable by ticker/market/direction). Defaults to core trades (BUY/SELL) only; pass `includeNonTrades=true` for all transactions |
-| GET | `/api/sync/status` | sync.ts | Last import status |
-| GET | `/api/sync/log` | sync.ts | Import history (limit query param) |
-| POST | `/api/sync/import` | sync.ts | Upload XLSX file (multipart) for import via `xlsx-import.service.ts` |
-| GET | `/api/positions` | positions.ts | Open positions from FIFO lot matching, enriched with live market prices. |
-| GET | `/api/analytics/summary` | analytics.ts | Portfolio KPIs, behavioral stats, win/loss analysis |
-| GET | `/api/analytics/pnl` | analytics.ts | P&L breakdown by ticker, month, or market (groupBy param). `groupBy=market` accepts optional `window=all|ytd|12m` (default `all`, used by the AI agent's `get_pnl_breakdown` tool; the dashboard always uses the default) and includes `realizedPnlIls` (ILS-normalized realized P&L via current BOI USD/ILS rate) on each row. |
-| GET | `/api/analytics/risk` | analytics.ts | Portfolio risk metrics (Herfindahl, max drawdown, Sharpe, Sortino). Time-series metrics use the on-demand equity-curve series — no warmup window required. |
-| GET | `/api/analytics/equity-curve` | analytics.ts | On-demand historical equity curve for the dashboard. `?window=1w|1m|ytd|1y|all`. Returns `{ window, points: [{date, totalValueIls, externalCapitalIls}], kpis: {realizedPnlIls, totalReturnPct}, warnings[] }`. See `equity-curve.service.ts`. |
-| GET | `/api/market/prices` | market.ts | Get cached/fresh prices for specified tickers (?tickers=X,Y) |
-| POST | `/api/market/refresh` | market.ts | Force-refresh all open position tickers from Yahoo Finance |
-| GET | `/api/market/benchmarks` | market.ts | TA-125 and S&P 500 latest quotes |
-| GET | `/api/market/unmapped` | market.ts | TASE tickers missing Yahoo Finance mapping |
-| POST | `/api/market/map` | market.ts | Save a TASE ticker → Yahoo symbol mapping |
-| GET | `/api/exchange-rates` | exchange-rates.ts | Current rate or historical (?date=YYYY-MM-DD) |
-| POST | `/api/exchange-rates/backfill` | exchange-rates.ts | Backfill exchange rates from earliest trade date |
-| GET | `/api/stock/:ticker/summary` | stock.ts | Per-stock detail page header + KPIs (position, realized P&L, fees, dividends, currency impact). Works for open AND closed positions. |
-| GET | `/api/stock/:ticker/open-lots` | stock.ts | Unsold FIFO buy lots for a ticker, each enriched with current price and per-lot unrealized P&L |
-| GET | `/api/stock/:ticker/round-trips` | stock.ts | Completed FIFO-matched buy→sell cycles (entry/exit/holding/realized P&L) |
-| GET | `/api/stock/:ticker/chart` | stock.ts | Daily-close price history from first buy → today (?from=&to= to override). Returns `{ available: false, reason, message }` for unmapped TASE funds. |
-| POST | `/api/chat` | chat.ts | Send message to AI agent, receive SSE stream response |
-| GET | `/api/chat/conversations` | chat.ts | List all AI conversations |
-| GET | `/api/chat/conversations/:id` | chat.ts | Get conversation with full message history |
-| DELETE | `/api/chat/conversations/:id` | chat.ts | Delete a conversation |
+- **auth** (`auth.ts`): `signup` (auto-verifies + session), `login`, `logout`, `me`, `verify-email`, `resend-verification`, `forgot-password`, `reset-password`, `PUT profile` (investor horizon/goal/notes).
+- **trades** `GET /api/trades` — paginated/filterable; BUY/SELL by default, `includeNonTrades=true` for all.
+- **sync** `GET /api/sync/status|log`, `POST /api/sync/import` (multipart XLSX).
+- **positions** `GET /api/positions` — open positions (FIFO) + live prices.
+- **analytics** `GET /api/analytics/summary|pnl|risk|equity-curve`. `pnl?groupBy=ticker|month|market` (market supports `window=all|ytd|12m`, adds `realizedPnlIls`); `equity-curve?window=1w|1m|ytd|1y|all`.
+- **market** `GET prices|benchmarks|unmapped`, `POST refresh|map`.
+- **exchange-rates** `GET /api/exchange-rates`, `POST /backfill`.
+- **stock** `GET /api/stock/:ticker/summary|open-lots|round-trips|chart` (works for open & closed positions).
+- **chat** `POST /api/chat` (SSE), `GET|DELETE /api/chat/conversations[/:id]`.
 
 ## Frontend Pages
 
-Auth pages (`/login`, `/signup`, `/verify-email`, `/forgot-password`, `/reset-password`) are rendered by `AppShell` without the sidebar/topbar chrome. Every other page requires a session cookie — unauthenticated requests are redirected to `/login?next=<original-path>` by `src/middleware.ts`.
+Auth pages render without sidebar/topbar chrome; all others require a session (middleware → `/login?next=…`). Layout: 240px sidebar + 56px topbar, mobile-first (sidebar collapses to drawer <md).
 
-| Route | Status | Description |
-|---|---|---|
-| `/login` | **Functional** | Email + password sign-in. Preserves `?next=` for post-login redirect. |
-| `/signup` | **Functional** | Email + password + optional display name. Sends verification email; user can't log in until verified. |
-| `/verify-email` | **Functional** | Consumes `?token=`, shows success/error state, links to `/login`. |
-| `/forgot-password` | **Functional** | Email → reset link. Always shows "check your email" to avoid user enumeration. |
-| `/reset-password` | **Functional** | `?token=` + new password + confirm. Invalidates all existing sessions for that user on success. |
-| `/dashboard` | **Functional** | Single pane of glass for portfolio state and performance. **Portfolio Total** card (ILS home currency) showing Market Value, Unrealized P&L, Realized P&L, and Total P&L with USD equivalent under each. **Per-market cards** (TASE, US) showing the same four rows in native currency with cross-currency equivalent. Realized P&L is always all-time. **Equity Curve card** (Recharts) with timeframe toggle (1W/1M/YTD/1Y/All) and a two-line on-demand chart — Account Value (holdings + cash) vs. Cumulative External Capital (deposits − withdrawals). The gap between the lines is total P&L. KPI strip beneath shows window-bounded Realized P&L + Total Return %. Components live in `apps/web/src/components/dashboard/` (`MoneyLine`, `PortfolioTotalCard`, `MarketCard`, `EquityCurveCard`). |
-| `/positions` | **Functional** | Open positions table with live market prices (Yahoo Finance), day change %, unrealized P&L, weight %. Refresh Prices button. Auto-refetch every 60s. Shows placeholder warning for unmapped TASE tickers. Ticker cells link to `/positions/:ticker`. |
-| `/positions/:ticker` | **Functional** | Per-stock detail page. Header (shares, avg cost, current price, day change, market value, unrealized P&L, weight, sector, first buy date, holding duration). Tabs: Overview (KPI cards + open FIFO lots), Trades (raw BUY/SELL list), Round-trips (completed buy→sell cycles with holding and return), Dividends & Fees (dividend payments with withheld tax + per-trade commissions). Price chart docked at bottom with green/red buy/sell markers and dashed avg-cost line. Works for open AND closed positions. Also reachable from `/history` and `/analytics` ticker cells. Components in `apps/web/src/components/stock/`. |
-| `/history` | **Functional** | Full trade table with filters (ticker/market/direction), pagination, "Show all transactions" toggle for non-trade types. Ticker cells link to `/positions/:ticker`. |
-| `/analytics` | **Functional** | Realized P&L summary (per-currency P&L, total/closed trade counts, avg return, avg holding period), behavioral stats (8 cards), TASE vs US comparison, per-ticker P&L breakdown table (ticker cells link to `/positions/:ticker`), monthly P&L heatmap (color-coded grid), risk metrics cards (HHI, drawdown, Sharpe, Sortino) |
-| `/import` | **Functional** | XLSX drag-and-drop import with file tracking, import status, import history table |
-| `/alerts` | Stub | Empty page |
-| `/settings` | **Functional** | Investor profile editor (horizon, goal, free-text notes) + account info (email, display name). Edits go to `PUT /api/auth/profile`. Form component is [InvestorProfileForm](apps/web/src/components/profile/InvestorProfileForm.tsx). |
-
-**Layout:** Sidebar (left, 240px wide) + TopBar (56px tall) + main content. Sidebar nav has 7 items.
+| Route | Description |
+|---|---|
+| `/login` `/signup` `/verify-email` `/forgot-password` `/reset-password` | Auth flow. |
+| `/dashboard` | Portfolio Total + per-market cards (ILS home currency, native + cross-currency). Equity Curve card (Recharts, 1W/1M/YTD/1Y/All): Account Value vs Cumulative External Capital — gap = total P&L. Components in `components/dashboard/`. |
+| `/positions` | Open positions table, live prices, day change %, weight %, auto-refetch 60s. Ticker → `/positions/:ticker`. |
+| `/positions/:ticker` | Per-stock detail. Header + tabs (Overview, Trades, Round-trips, Dividends & Fees) + price chart with buy/sell markers. Open & closed. Components in `components/stock/`. |
+| `/history` | Trade table, filters, "show all transactions" toggle. |
+| `/analytics` | Realized P&L, behavioral stats, TASE-vs-US, per-ticker breakdown, monthly heatmap, risk cards (HHI/drawdown/Sharpe/Sortino). |
+| `/import` | XLSX drag-drop import with history. |
+| `/alerts` | Stub. |
+| `/settings` | Investor profile editor + account info. |
 
 ## Conventions
 
-- **Per-user data scoping (CRITICAL)** — every backend service function that touches per-user tables (`trades`, `alerts`, `ai_conversations`, `sync_log`) takes `userId` as its first argument and threads it into the Prisma `where` clause. Route handlers get `userId` from `req.user!.id` (guaranteed by `requireAuth`). The in-memory FIFO match cache in `pnl.service.ts` is keyed by `userId` — a single-key cache would leak one user's FIFO results to another within the 1-minute TTL. The `securities`, `market_prices`, and `exchange_rates` tables are shared and intentionally NOT scoped by user. AI tool executors have the signature `(userId, input) => Promise<unknown>` and the chat handler passes `req.user!.id` through `executeTool`.
-- **Auth middleware** — `requireAuth` is mounted once via `app.use("/api", requireAuth)` in `apps/api/src/index.ts`, AFTER the public routes (`/api/health`, `/api/auth/*`). It checks the `takumi_session` cookie against the `sessions` table (SHA-256 of the raw value is stored), rejects expired or email-unverified sessions, and sets `req.user`. Rolling refresh: if the session hasn't been touched in >24h, its expiry is bumped by 30d (fire-and-forget).
-- **Investor profile (AI framing)** — `users.investor_horizon` (intraday/swing/position/long_term/mixed), `users.investor_goal` (aggressive_growth/steady_growth/income/preservation/learning), and free-text `users.investor_notes` are declared by the user during onboarding and editable in `/settings`. `buildSystemPrompt` in [system-prompt.ts](apps/api/src/ai/system-prompt.ts) injects them as an `INVESTOR PROFILE` block alongside an **inferred** horizon derived from `summary.avgHoldingDays` (so the agent can notice drift between declared and actual behaviour). When nothing is declared, the system prompt includes a guideline telling the agent to default to long-term framing and avoid day-trading language. `users.investor_profile_updated_at` is set on first save — including when the user skips with empty values — so `OnboardingModal` in [apps/web/src/components/profile/OnboardingModal.tsx](apps/web/src/components/profile/OnboardingModal.tsx) doesn't keep nagging. Enum values are mirrored in three places: `INVESTOR_HORIZONS`/`INVESTOR_GOALS` in [auth.ts](apps/api/src/routes/auth.ts), `InvestorHorizon`/`InvestorGoal` types in [UserProvider.tsx](apps/web/src/components/UserProvider.tsx), and `HORIZON_OPTIONS`/`GOAL_OPTIONS` in [InvestorProfileForm.tsx](apps/web/src/components/profile/InvestorProfileForm.tsx) — keep them in sync if you add a value.
-- **TypeScript** for all Node.js code (ESM — `"type": "module"` everywhere)
-- **File extensions in imports** — always use `.js` in TypeScript import paths (`./lib/config.js`)
-- **Shared types** live in `@takumi/types`, not duplicated across apps
-- **Prisma client** is re-exported from `@takumi/db` as a singleton (`packages/db/src/index.ts`)
-- **API routes** follow `/api/<resource>` pattern
-- **Frontend pages** are in `apps/web/src/app/<route>/page.tsx` (Next.js App Router, all `"use client"`)
-- **Data fetching** on frontend uses TanStack Query (`useQuery`, `useMutation`)
-- **API client** helper in `apps/web/src/lib/api-client.ts` — wraps `fetch` with base URL
-- **Formatting** helpers in `apps/web/src/lib/formatters.ts` — `formatCurrency`, `formatDate`, `formatNumber`, `isHebrew`
-- **RTL handling** — Hebrew security names wrapped with `<span dir="rtl">` using `isHebrew()` helper; applied in positions, analytics, and history pages
-- **TASE security identification** — TASE securities use paper number (מספר נייר) as `ticker` and paper name (שם נייר) as `securityName`. US securities use standard ticker symbols (e.g., AAPL). The XLSX parser uses the symbol column (paper number) for TASE securities.
-- **TASE price units** — IBI's `שער ביצוע` for Israeli securities is quoted in **agorot** (1/100 ILS), not shekels. The XLSX parser divides by 100 when `market === "TASE"` so `trades.price` is always per-share ILS. US trades are stored as-is. Sanity check: for any TASE buy/sell, `quantity × price + commission ≈ |proceedsIls|`. Migration script `scripts/fix-tase-prices.ts` corrects rows imported before this fix (idempotent, uses `rawPayload`).
-- **Per-currency P&L** — `getPortfolioSummary()` returns `pnlByCurrency` array alongside `totalRealizedPnl`. Dashboard shows separate ILS/USD P&L lines. Never mix currencies in a single formatted amount.
-- **ILS home currency for aggregation** — `position.service.ts` pre-computes `marketValueIls`, `totalCostIls`, `unrealizedPnlIls` on every `OpenPosition` using the current BOI USD/ILS rate (USD positions converted; ILS positions pass through 1:1). Portfolio weights and any cross-position aggregate (analytics `totalOpenValue`, system-prompt portfolio context, AI `get_portfolio_summary.totalPortfolioValueIls`, AI `get_sector_exposure.marketValueIls`, Positions page summary strip) MUST use the `*Ils` fields. Summing native `marketValue` across ILS+USD inflates TASE weights by ~3.7× (USD magnitudes are naked). The per-position native `marketValue`/`unrealizedPnl` are still correct and used for per-row display in the native currency.
-- **XLSX import** — `xlsx-import.service.ts` parses IBI Excel exports (Hebrew column headers), maps 23 transaction types to `Direction` enum, extracts real tickers from `שם נייר` patterns, generates deterministic `tradeId` hashes for dedup. Uses `source: "xlsx_import"`. Re-uploading same file is safe (upsert).
-- **US ticker renames** — When IBI renames a US ticker (e.g. FIVG→SIXG, FB→META, KLTO→GRML, HUSA→AGIG) they update the historical rows' `symbol` (`מס' נייר / סימבול`) column to the new ticker but leave the `securityName` (שם נייר) untouched, so legacy BUY rows show `securityName="FIVG US"` with `symbol="SIXG"`. `parseSecurity` prefers `symbol` whenever it matches the US-ticker regex (`^[A-Z][A-Z0-9.-]{0,5}$`) over the ticker embedded in the name, so pre- and post-rename rows key to the same ticker in FIFO matching. Numeric symbols (IBI's internal id for delisted US ETFs like 29189461/24070908) stay on the name-based path. Migration for pre-fix data: `scripts/fix-renamed-tickers.ts` (idempotent, re-parses `rawPayload`).
-- **Display-name caching** — `market.service.getLatestPrices` opportunistically upserts `securities.{ticker, name, market, currency, yahooSymbol}` from the Yahoo quote's `longName ?? shortName` on every successful fetch (fire-and-forget, failures logged but non-fatal). `position.service.getOpenPositions` and `stock-detail.service.getStockSummary` prefer `securities.name` over the trade's historical `securityName`, so post-rename rows show the current company name (e.g. "Meta Platforms, Inc." instead of IBI's stale "FACEBOOK(FB)"). This also improves every US position's label since IBI names tend to be ugly ("ISHARES COM(IAU" → "iShares Gold Trust"). Before this change the `securities` table was empty — it's populated live now.
-- **Ticker-rename UX** — `StockSummary` now carries `priorNames: string[]` listing legacy `securityName` values from the user's own trades whose embedded ticker (e.g. "FB" in "FACEBOOK(FB)", "FIVG" in "FIVG US") differs from the current ticker. This filters out benign IBI-vs-Yahoo format mismatches like "ASTS US" vs "AST SpaceMobile, Inc." which are NOT renames. `StockHeader` renders a "Formerly known as …" subtitle when non-empty; `TradesTab` tags each pre-rename row with a muted "as FIVG US" under the date. Rename extraction lives in `extractEmbeddedTicker` in `stock-detail.service.ts`.
-- **XLSX import writes are batched, not serial** — after parsing, the service pre-fetches which `tradeId`s already exist for this user+source, then does one bulk `prisma.trade.createMany({ skipDuplicates: true })` for brand-new rows and chunked parallel `prisma.trade.update()` calls (concurrency 10) for existing rows. Serial `upsert` per row hit Next.js' ~30s proxy timeout against a remote Postgres (each round-trip ~100ms on the Railway proxy from local dev × ~280 rows = ~80s → `ECONNRESET` / socket hang up in the browser, even though the API eventually finished). If you change the loop, keep it bulk/parallel or local-dev imports will break again.
-- **Transaction linking** — Related transactions (e.g., dividend + tax withholding) share the same `ticker` and `tradeDate`. Query by ticker to see all related activity. No explicit `groupId` field.
-- **Market data caching** — Yahoo Finance prices are cached in `market_prices` with 15-minute staleness. The `market.service.ts` checks cache first, fetches from Yahoo only for stale/missing tickers. On failure, serves stale cache. Benchmarks (TA-125, S&P 500) are cached the same way. `market_prices.volume` is `BigInt?` (PostgreSQL `BIGINT`) — INT4 overflowed on indices like S&P 500 whose daily volume exceeds 2³¹. Read sites in `market.service.ts` convert with `Number(cached.volume)` since real volumes are well under `Number.MAX_SAFE_INTEGER`. **Historical** daily closes are cached durably in `price_history` (shared across users) — historical data is immutable so there's no staleness window; only a tail-gap fill triggers an upstream call when the cached coverage falls more than ~3 days behind the requested end date.
-- **TASE ticker mapping** — TASE securities use IBI paper numbers as `ticker` (e.g., `1081820`), but Yahoo Finance requires trading symbols with `.TA` suffix (e.g., `LUMI.TA`). The mapping is maintained in `apps/api/src/data/tase-ticker-map.json` and synced to the `securities.yahooSymbol` column. Tickers without a Yahoo mapping no longer short-circuit the historical-price path — `market.service.getHistoricalPrices` falls through to funder.co.il (history) and TheMarker (current quote) so they still function end-to-end.
-- **TheMarker Finance fallback** — TASE tickers without a Yahoo mapping (notably Israeli mutual funds / קרנות נאמנות which have no `.TA` trading symbol, e.g., `1143726`, `1169408`) fall back to TheMarker Finance. `themarker.service.ts` fetches `https://finance.themarker.com/stock/{paperId}`, parses the server-rendered Apollo cache from `<script id="__NEXT_DATA__">`, and reads `ROOT_QUERY.assets({"ids":"<paperId>"}).0`. Prices are quoted in agorot and divided by 100 to normalize to ILS (same convention as IBI). No API key, no mapping — IBI paper number is the URL. Yahoo remains the primary source for mapped tickers (provides 52w high/low); TheMarker fills daily change/volume only. Also invoked if Yahoo returns no data for a mapped TASE ticker.
-- **funder.co.il fallback (TASE history)** — `funder.service.ts` provides historical daily closes for TASE securities (`seco/{paperId}/s`, prices in agorot ÷100 → ILS) and TASE mutual funds (`fundo/{fundId}`, NAV already ILS). Same `bulkInsert({ skipDuplicates: true })` write-through path to `price_history` as Yahoo/Stooq; rows carry `source = 'funder'`. Endpoint resolution: `securities.funder_kind` is checked first; if null, the heuristic `guessFunderKind` is used (`/^5\d{6}$/` → `fundo`, else `seco`); on heuristic miss the other endpoint is tried once and the discovered kind is upserted to `securities.funder_kind` so subsequent calls go direct. Funder always returns full inception-to-today history (~300–400 KB) with no date params — the existing 3-day tail-gap gate in `getHistoricalPrices` keeps fetches to ≤1 per ticker per week. History-only: TheMarker stays as the current-quote source because funder's last bar lags one trading day. **Markup-drift recovery**: if every TASE historical call returns `[]` with a `[funder] FunderParseError` log, re-run `funder/discover-endpoints.ts` (Playwright) to re-derive `tStockData` / `tStockData2` variable names and update the `literalRegex` entries in `funder.service.ts`.
-- **Stooq fallback (US)** — Yahoo Finance is unreliable from Railway (the `yahoo-finance2` crumb fetch to `fc.yahoo.com` frequently fails with `ETIMEDOUT` or 429, taking the whole library offline). `stooq.service.ts` is a reliable fallback for US equities and the S&P 500 (`^GSPC` → `^spx`). Endpoint: `https://stooq.com/q/l/?s=<sym>.us&f=spd2t2ohlcv` — CSV fields: symbol, prevClose, date, time, open, high, low, close, volume. `dayChange` derived as `close - prevClose`. Delayed ~15 min, no 52w high/low. Kicks in whenever Yahoo fails for a US ticker (per-ticker `No quote data` response OR the whole Yahoo call throwing). Does NOT cover TASE — TASE fallback is TheMarker.
-- **Equity curve (on-demand)** — `equity-curve.service.ts` computes the dashboard curve from source data on every request, replacing the old `portfolio_snapshots` table. It walks the user's trades chronologically maintaining `cashIls`/`cashUsd`/`holdings`/`externalCapitalIls`, multiplies open positions by per-day historical close (via `market.service.getHistoricalPrices`, DB-first), converts USD with the BOI rate at each day, and emits one ILS point per day. **Two lines**: Account Value (holdings + cash) and Cumulative External Capital (DEPOSITs − WITHDRAWALs at trade-date FX). **Gap = total P&L** (realized + unrealized + dividends/interest − fees/taxes + FX). **Implicit-deposit detection**: if a BUY would drive cash negative, the shortfall is credited to externalCapitalIls — this handles legacy IBI data where deposit rows are zero-proceeds skeletons. **TRANSFER rows** (`העברה מזומן בשח`) carry IBI's real cash movements; the service infers DEPOSIT vs. WITHDRAWAL from the security name (Hebrew "משיכה" = withdrawal). KPIs: Realized P&L is matched lots filtered by `sellDate ∈ window`, converted at sellDate FX. Total Return % uses Modified Dietz: `(ΔAccountValue − netExternal) / (startValue + max(netExternal, 0))`. Downsampling: 1W/1M/YTD daily, 1Y last-day-per-ISO-week, All last-day-per-month. Per-user 60s TTL memo. The same service powers `risk.service` (max drawdown / Sharpe / Sortino via `getDailyTotalAccountValueSeries`) and the AI tool `get_benchmark_comparison`.
-- **AI chat** — Persistent right-side drawer (400px on ≥md, full-width on mobile). Uses Zustand store (`chat-store.ts`) for state, SSE streaming from `POST /api/chat`. Messages rendered with `react-markdown`. Tool calls shown as collapsible indicators. Each `ChatMessage` carries an `isStreaming` flag — set true on the empty assistant placeholder so `MessageBubble` shows a typing-dots indicator before the first chunk arrives, flipped false on `done`/`error`/abort. Cancelling: `chat-store.stopStreaming()` aborts the in-flight `fetchSSE` via `AbortController`; `ChatInput` swaps Send for a Stop button while `isStreaming`. SSE travels through a Next.js Route Handler at `apps/web/src/app/api/chat/route.ts` (NOT the rewrite) — Web Streams flush per-event, whereas the rewrite proxy was buffering chunks behind Railway's edge.
-- **Floating chat bar → drawer hand-off** — `FloatingChatBar` (visible on all pages when the drawer is closed) opens the drawer the moment the user clicks its input, not just on submit. Any text already typed is handed off via `chat-store.draftMessage` / `setDraftMessage`; `ChatInput` reads `draftMessage` once on mount, pre-populates its textarea, places the caret at the end, focuses, and clears the draft. The bar's sparkle button still calls `open()` directly without touching the draft (no value to hand off).
-- **Responsive layout** — Mobile-first. Sidebar is a fixed 240px column on ≥md and collapses to an off-canvas drawer on <md (hamburger in TopBar, state in `ui-store.ts`). ChatDrawer is full-width on <md, 400px on ≥md. Tables wrap in `overflow-x-auto` containers. Grid layouts use `grid-cols-{1|2} … lg:grid-cols-4` pattern. Main padding is `p-3 sm:p-6`. Viewport meta set via `viewport` export in `apps/web/src/app/layout.tsx`.
-- **AI tool architecture** — Tools defined in `apps/api/src/ai/tools/` grouped by tier. Each file exports schemas (Anthropic format) + executor map. Registry in `tools/index.ts` combines all. Chat handler in `ai/chat-handler.ts` runs the agentic loop (stream → detect tool_use → execute → stream again).
-- **FIFO caching** — `runFifoMatching()` results cached in-memory with 1-minute TTL to avoid redundant re-computation when multiple AI tools call it within the same chat turn.
-- **Stock detail page** — `/positions/:ticker` is backed by `stock-detail.service.ts` + `routes/stock.ts` and composes existing services (trade, pnl, position, market, exchange-rate). `StockSummary` aggregates per-currency realized P&L, commissions paid, and dividends (with tax withheld). The service does NOT run its own SQL queries for P&L/lots — it filters the cached `runFifoMatching()` output via `getMatchedLotsForTicker()` / `getOpenLotsForTicker()`. Currency impact (USD tickers only) decomposes unrealized P&L into "price move" vs "FX move" per open FIFO lot using historical BOI rates from `getRate(buyDate)`. The small interaction term is folded into price-move so the two components sum to the total unrealized ILS P&L cleanly. URL uses `encodeURIComponent(ticker)` everywhere — TASE paper numbers like `1081820` are fine as URL segments.
-- **Historical price chart** — `market.service.getHistoricalPrices(ticker, market, from, to)` is DB-first: reads cached rows from the shared `price_history` table, fills only the tail gap from upstream (`yahoo-finance2.chart()` primary, `stooq.service.fetchStooqHistorical()` US fallback, `funder.service.fetchFunderHistorical()` TASE fallback), bulk-inserts via `price-history.service.bulkInsert()` (`createMany({ skipDuplicates: true })` — historical closes are immutable so no UPDATE path), then merges + dedupes + returns. The coverage check only refills the tail (latest cached → today); mid-range gaps are treated as real market holidays, NOT missing data. For TASE the funder leg covers both mapped (when Yahoo returns nothing) and unmapped (where Yahoo is skipped) cases — `{ available: false, reason: 'unmapped_tase' }` is now returned only when even funder has no data (the historic short-circuit on missing Yahoo mapping was removed). Result's top-level `source` is one of `'yahoo' | 'stooq' | 'funder'` — the freshly-fetched provider when upstream was called this request, otherwise the source of the most recent cached row. `StockChart.tsx` renders a Recharts `LineChart` with `<ReferenceDot>` per BUY (green) / SELL (red) executed-price marker and a dashed `<ReferenceLine>` at the current avg cost (only when position is open). Buy/sell dates that fall on market holidays snap to the nearest prior data point so markers still render on the X axis (category scale).
-
-## Implementation Status
-
-### Phase 1 — Foundation ✅ COMPLETE
-- [x] Monorepo scaffolding (pnpm workspaces, turbo, TypeScript configs)
-- [x] Prisma schema — 9 tables with all indexes and constraints
-- [x] Shared types package (`@takumi/types`) — Trade, SyncState, Position, Alert, Analytics, API types
-- [x] Express API — health, trades (paginated + filtered), sync status routes
-- [x] Next.js frontend — app shell, sidebar, topbar, 7 page routes
-- [x] Trade history page — full table with ticker/market/direction filters + pagination
-- [x] Dashboard page — KPI cards
-- [x] Seed script with 12 sample trades
-- [x] `.env.example` with all required variables
-
-### Phase 2 — Analytics & Dashboard ✅ COMPLETE
-- [x] P&L engine — FIFO lot matching (`pnl.service.ts`) calculates realized P&L per matched lot, per ticker, per month, per market
-- [x] Positions service (`position.service.ts`) — derives open positions from unmatched buy lots with weighted avg cost basis
-- [x] Analytics service (`analytics.service.ts`) — win rate, avg holding period, profit factor, largest win/loss, behavioral stats
-- [x] API routes: `GET /api/positions`, `GET /api/analytics/summary`, `GET /api/analytics/pnl?groupBy=ticker|month|market`
-- [x] Dashboard page — 4 live KPI cards + 3 summary cards + equity curve placeholder
-- [x] Positions page — open positions table (ticker, qty, avg cost, current price placeholder, unrealized P&L, weight %)
-- [x] Analytics page — 8 behavioral stat cards, TASE vs US comparison, per-ticker P&L breakdown table, monthly heatmap placeholder
-- [x] Transaction filtering — only core trades (BUY/SELL) used by P&L, positions, analytics; all raw transactions stored for future processing (dividends, taxes, fees, etc.)
-- [x] **Previously deferred, now complete in Phase 3**: equity curve chart, monthly heatmap, live market prices for positions
-
-### Data Import — XLSX ✅ COMPLETE
-- [x] XLSX parser (`xlsx-import.service.ts`) — parses Hebrew columns, maps 23 transaction types, extracts tickers from שם נייר patterns
-- [x] Schema extended with `proceeds_fx`, `proceeds_ils`, `capital_gains_tax` fields
-- [x] API route `POST /api/sync/import` with multer file upload
-- [x] Frontend import page at `/import` with drag-and-drop upload, import history with filenames
-- [x] IBI live sync code fully removed (Python sidecar, scheduler, trigger route)
-
-### Phase 3 — Market Data & Live Prices ✅ COMPLETE
-- [x] Live market prices via Yahoo Finance (`yahoo-finance2` v3) — `market.service.ts` fetches and caches in `market_prices` with 15-min staleness
-- [x] TASE ticker mapping — manual JSON map (`apps/api/src/data/tase-ticker-map.json`) maps IBI paper numbers to Yahoo `.TA` symbols. `yahooSymbol` column on `securities` table. API endpoints for managing unmapped tickers.
-- [x] Benchmark indices (TA-125 via `^TA125`, S&P 500 via `^GSPC`) — `GET /api/market/benchmarks`
-- [x] Exchange rate history backfill via Bank of Israel SDMX API → `exchange_rates` table — `exchange-rate.service.ts`
-- [x] Portfolio risk metrics: Herfindahl concentration, max drawdown, Sharpe/Sortino ratios — `risk.service.ts`, `GET /api/analytics/risk`. Time-series metrics now read the on-demand equity-curve series instead of the dropped `portfolio_snapshots` table.
-- [x] Positions page updated with live prices, day change %, Refresh Prices button, auto-refetch
-- [x] **Equity curve (on-demand)** on dashboard — `equity-curve.service.ts` + `EquityCurveCard` (timeframe toggle, two-line chart, KPI strip). Replaces the `portfolio_snapshots`-backed equity curve.
-- [x] Monthly P&L heatmap on analytics page (color-coded year×month grid)
-- [x] Risk metrics cards on analytics page (HHI, max drawdown, Sharpe, Sortino)
-- [x] Schema extended: `market_prices` +5 fields, `securities` +3 fields
-- [x] Shared types: new `@takumi/types/market.ts` (MarketQuote, ExchangeRateEntry, PriceSource, RiskMetrics) and `@takumi/types/analytics.ts` extended with EquityCurveWindow / EquityCurvePoint / EquityCurveResponse
-- [x] Position interface extended with `priceSource`, `dayChange`, `dayChangePct`
-
-### Phase 4 — AI Agent ✅ COMPLETE
-- [x] Claude integration via `@anthropic-ai/sdk` v0.52 — model: `claude-sonnet-4-20250514`
-- [x] SSE streaming chat endpoint (`POST /api/chat`) with agentic tool execution loop (max 10 tool calls per turn, 4096 max tokens)
-- [x] Persistent chat drawer (right side, 400px) — toggle via TopBar button, visible on all pages
-- [x] System prompt dynamically built with live portfolio context (positions, P&L, sync status)
-- [x] Conversation CRUD — persistence in `ai_conversations` / `ai_messages`, list/delete/load history
-- [x] Zustand store for frontend chat state (messages, streaming, drawer, conversations)
-- [x] SSE client helper for POST-based SSE (browser EventSource is GET-only)
-- [x] Markdown rendering in assistant messages via `react-markdown`, collapsible tool call indicators
-- [x] Quick-action chips for common queries (shown when no messages)
-- [x] FIFO matching results cached with 1-minute TTL to avoid redundant computation during multi-tool chat turns
-- [x] **11 core tools**: `get_portfolio_summary`, `query_trades`, `get_pnl_breakdown`, `get_behavioral_report`, `run_what_if`, `get_market_price`, `create_alert`, `list_alerts`, `delete_alert`, `trigger_sync`, `get_sync_status`
-- [x] **7 Tier 1 tools** (no external APIs — derived from existing DB data): `get_dividend_summary`, `get_cost_analysis`, `get_performance_timeline`, `get_streaks`, `get_sector_exposure`, `get_security_info`, `get_holding_period_analysis`
-- [x] **4 Tier 2 tools** (powered by Phase 3 market data): `get_benchmark_comparison`, `get_currency_impact`, `get_risk_report`, `simulate_alternative_investment`
-- [x] What-if scenario engine (`whatif.service.ts`) — stop-loss simulation and modified sell date scenarios
-- [x] Static sector/industry mapping (`sector-map.json`) for ~25 tickers
-- [x] Context management: last 40 raw messages kept in full for API calls; conversation title auto-generated from first message
-
-### Phase 5 — Alerts, Settings & Hardening
-- Alert engine (6 types), alert inbox at `/alerts`
-- Settings page (currency, cost basis method)
-- Error boundaries, structured logging
-- Performance optimization for 5,000+ trades
-- E2E tests
-- **Tier 3 data enrichment** (advanced intelligence):
-  - Technical indicators (50/200-day MA, RSI) from daily OHLCV history (extend existing `price_history` table with `open`/`high`/`low`/`volume` columns — close already shipped in PR #1)
-  - News & corporate events via Finnhub free tier (new `security_events` table)
-  - Tax intelligence: short/long-term gains classification, tax-loss harvesting candidates
-- New Tier 3 agent tools: `get_technical_indicators`, `get_news`, `get_upcoming_events`, `get_tax_report`
+- **TypeScript ESM everywhere** — always use `.js` extensions in import paths (`./lib/config.js`). Shared types in `@takumi/types`; Prisma client re-exported from `@takumi/db`. Frontend pages are `"use client"`, data via TanStack Query (`lib/api-client.ts`), formatting via `lib/formatters.ts`.
+- **Per-user scoping (CRITICAL)** — every service touching per-user tables takes `userId` first and threads it into the Prisma `where`. Route handlers read `req.user!.id`. The FIFO match cache in `pnl.service.ts` is **keyed by userId** (single-key would leak across users). `securities`/`market_prices`/`exchange_rates` are shared, not scoped.
+- **ILS home currency (CRITICAL)** — `position.service.ts` precomputes `marketValueIls`/`totalCostIls`/`unrealizedPnlIls` via current BOI rate. Every cross-position aggregate (weights, analytics totals, AI tools, system prompt) MUST use the `*Ils` fields — summing native `marketValue` across ILS+USD inflates TASE weights ~3.7×. Per-row native values stay correct for display.
+- **Per-currency P&L** — `getPortfolioSummary()` returns `pnlByCurrency`; never mix currencies in one formatted amount.
+- **TASE price units** — IBI `שער ביצוע` for Israeli securities is in **agorot** (÷100 → ILS); parser divides by 100 when `market==="TASE"`. Sanity: `qty × price + commission ≈ |proceedsIls|`.
+- **TASE identification** — TASE uses IBI paper number as `ticker`, paper name as `securityName`. US uses standard symbols. Hebrew names wrapped `dir="rtl"` via `isHebrew()`.
+- **US ticker renames** — IBI updates `symbol` but not `securityName` on renames (FIVG→SIXG, FB→META…). `parseSecurity` prefers `symbol` when it matches the US-ticker regex so pre/post rows key to the same ticker. `StockSummary.priorNames` drives the "Formerly known as…" UI.
+- **Display-name caching** — `market.service` upserts `securities.name` from Yahoo `longName`; positions/stock-detail prefer it over IBI's stale names.
+- **XLSX import** — `xlsx-import.service.ts` parses Hebrew columns, maps transaction types via `DIRECTION_MAP`, extracts tickers from `שם נייר` patterns, dedups via deterministic `tradeId`. Writes are **bulk/parallel** (createMany + chunked updates) — do not revert to serial upsert (hit Next.js ~30s proxy timeout). Re-upload is safe.
+- **Equity curve (on-demand)** — `equity-curve.service.ts` walks trades chronologically (cash + holdings × historical close, USD→ILS at per-day BOI rate). Two lines: Account Value and Cumulative External Capital (deposits−withdrawals); **gap = total P&L**. Implicit-deposit detection credits negative-cash shortfalls; TRANSFER rows carry real cash moves. Total Return % via Modified Dietz; 60s per-user memo. Also powers `risk.service` and AI `get_benchmark_comparison`.
+- **Price sources** — Yahoo (`yahoo-finance2`) primary, cached in `market_prices` (15-min staleness). Fallbacks: **Stooq** (US + S&P 500, Yahoo unreliable from Railway), **TheMarker** (current quotes for unmapped TASE funds), **funder.co.il** (TASE history — securities `seco/` ÷100, funds `fundo/` already ILS). TASE→Yahoo mapping in `tase-ticker-map.json` (`.TA` suffix). If TASE history returns `[]` with `FunderParseError`, re-run `funder/discover-endpoints.ts` (Playwright).
+- **Historical prices** — `market.service.getHistoricalPrices` is DB-first: read `price_history`, fill only the **tail gap** from upstream (mid-range gaps = market holidays), bulk-insert (immutable, no UPDATE), merge+dedupe. `source ∈ {yahoo,stooq,funder}`. `StockChart.tsx` plots closes with buy/sell ReferenceDots + avg-cost ReferenceLine.
+- **AI chat** — right-side drawer (400px / full-width mobile), Zustand `chat-store.ts`, SSE from `POST /api/chat` via Next route handler `app/api/chat/route.ts` (NOT the rewrite — flushes per event). `react-markdown` rendering, collapsible tool indicators, Stop via AbortController. `FloatingChatBar` hands off draft text on open.
+- **AI tools** — defined in `apps/api/src/ai/tools/` by tier; registry in `tools/index.ts`; agentic loop in `chat-handler.ts`. Executor signature `(userId, input)`. `runFifoMatching()` cached 1-min TTL.
+- **Investor profile (AI framing)** — `users.investor_horizon`/`investor_goal`/`investor_notes` declared at onboarding, editable in `/settings`. `buildSystemPrompt` injects them plus an inferred horizon from `avgHoldingDays`. Enum values mirrored in `auth.ts`, `UserProvider.tsx`, `InvestorProfileForm.tsx` — keep in sync.
+- **Stock detail** — `stock-detail.service.ts` composes existing services (no own SQL), filtering cached FIFO output. USD currency-impact splits unrealized P&L into price vs FX move via historical BOI rates. URLs use `encodeURIComponent(ticker)`.
+- **Logging (API)** — structured via **pino** (`lib/logger.ts`). `pino-http` (mounted in `index.ts` after `express.json()`) attaches a per-request child logger on `req.log` + a `req.id` (reuses incoming `x-request-id`, else a UUID, echoed back as a response header) and logs every request with method/url/status/responseTime/`userId`. Pretty output in dev, raw JSON in prod (`LOG_LEVEL` env, default `info`). In services (no `req`) import the base `logger`; pass context as the first arg object with a `module` field, e.g. `logger.warn({ module: 'market', ticker, err }, 'msg')`. Don't add new `console.*`.
+- **Errors (API)** — central `error-handler.ts` (last middleware). Express 5 auto-forwards async rejections here, so routes need no try/catch. Throw `AppError(statusCode, code, message)` (`lib/errors.ts`) for precise non-500s; anything else is a 500 (message hidden in prod). Always responds `{ error: code, message, statusCode, requestId }` and logs the full stack with request/user context.
+- **Error boundaries (web)** — App Router `error.tsx` per major segment (`dashboard`, `positions`, `positions/[ticker]`, `analytics`, `history`, `settings`) + a root `app/error.tsx` and `app/global-error.tsx` (own `<html>`, catches root-layout failures). Each is a thin `"use client"` wrapper rendering the shared `components/ErrorFallback.tsx` (Try-again via `reset()`) and `console.error`-logging the error. A segment crash keeps sidebar/topbar chrome; no external telemetry sink yet.
 
 ## Deployment (Railway)
 
-Hosted on Railway at https://web-production-7a48c.up.railway.app — project ID `3a1f80a2-97df-4762-9187-4e6cf4781e76`. Three services: `web`, `api`, `Postgres`.
+Hosted at https://web-production-7a48c.up.railway.app (project `3a1f80a2-…`). Services: `web` (public), `api` (private, listens on `::`), `Postgres`. Push to `master` → auto-deploy.
 
-**Access** — Email + password with email verification (Resend). Session cookies (`takumi_session`) are validated on every API request. The previous HTTP Basic Auth layer was removed in the multi-user migration. The primary user (`nitzan.lary@gmail.com`) was created and backfilled with all pre-migration data by `scripts/bootstrap-users.ts`.
-
-**Service topology:**
-- `web` (Next.js) — only service with a public domain. `src/middleware.ts` redirects unauthenticated requests (no session cookie) to `/login`. `next.config.mjs` rewrites `/api/:path*` to `${API_URL}/api/:path*` server-side, where `API_URL=http://${{api.RAILWAY_PRIVATE_DOMAIN}}:${{api.PORT}}`.
-- `api` (Express) — private-only (no public domain). Explicitly listens on `::` (IPv6+IPv4) which Railway's private networking requires. `PORT=3001` must be set as a service variable so `${{api.PORT}}` resolves in the web service's `API_URL`.
-- `Postgres` — managed plugin, referenced as `${{Postgres.DATABASE_URL}}` from api.
-
-**Deploy flow:**
-- We now deploy by pushing to GitHub — Railway auto-deploys on push to `master`.
-- API build: `pnpm install --frozen-lockfile=false && pnpm --filter @takumi/db exec prisma generate`.
-- API preDeploy: `pnpm --filter @takumi/db exec prisma db push && pnpm --filter @takumi/api run bootstrap-users` (schema sync + idempotent primary-user bootstrap; script is a no-op after first successful run).
-- API start: `pnpm --filter @takumi/api start` (uses `tsx`, not a compiled `dist/`, so workspace TypeScript deps work).
-- Web build: `pnpm install --frozen-lockfile=false && pnpm --filter @takumi/web build`.
-- Web start: `pnpm --filter @takumi/web start` → `next start -H ::`.
-
-**Required service variables:**
-
-| Service | Variable | Value |
-|---|---|---|
-| api | `DATABASE_URL` | `${{Postgres.DATABASE_URL}}` |
-| api | `ANTHROPIC_API_KEY` | Claude key |
-| api | `PORT` | `3001` (explicit, so `${{api.PORT}}` resolves for web's `API_URL`) |
-| api | `APP_URL` | Public URL of the web service — used in verification + reset emails |
-| api | `RESEND_API_KEY` | Resend API key for transactional email (unset = log-only) |
-| api | `EMAIL_FROM` | `"Takumi <onboarding@resend.dev>"` (or your verified domain sender) |
-| api | `BOOTSTRAP_USER_EMAIL` / `BOOTSTRAP_USER_PASSWORD` | One-time, consumed by bootstrap-users.ts. Safe to leave set — script is idempotent. |
-| web | `API_URL` | `http://${{api.RAILWAY_PRIVATE_DOMAIN}}:${{api.PORT}}` |
-
-**Local dev vs prod** — `API_URL` defaults to `http://localhost:3001`. Same `/api/*` paths work locally via the same rewrite. For local dev without running the full auth flow, set `AUTH_DEV_BYPASS_USER_ID` on the api service to your user's id — `requireAuth` will resolve that user without a session cookie. NEVER set this in prod.
+- **web** — only public service. `next.config.mjs` rewrites `/api/:path*` → `${API_URL}`; `API_URL=http://${{api.RAILWAY_PRIVATE_DOMAIN}}:${{api.PORT}}`. Start: `next start -H ::`.
+- **api** — `PORT=3001` must be explicit. preDeploy runs `prisma db push` + `bootstrap-users`. Starts via `tsx` (not compiled dist).
+- **Required vars** — api: `DATABASE_URL=${{Postgres.DATABASE_URL}}`, `ANTHROPIC_API_KEY`, `PORT=3001`, `APP_URL`, `RESEND_API_KEY`, `EMAIL_FROM`. web: `API_URL`.
+- **Local dev** — `API_URL` defaults to `http://localhost:3001`. Set `AUTH_DEV_BYPASS_USER_ID` (api) to skip auth locally; never in prod.
 
 ## External Services
 
-| Service | Purpose | Phase | Status | Notes |
-|---|---|---|---|---|
-| Resend | Transactional email (verification, password reset) | 5 | **Active** | REST API called directly (no SDK). No-op when `RESEND_API_KEY` unset — logs the email instead. |
-| Yahoo Finance (`yahoo-finance2` v3) | Live prices, benchmarks (TA-125, S&P 500) | 3 | **Active** | TASE tickers resolved via `tase-ticker-map.json` → `.TA` suffix. 15-min cache staleness. |
-| TheMarker Finance (scrape) | Price fallback for unmapped TASE tickers (mutual funds) | 3 | **Active** | Scrapes `finance.themarker.com/stock/{paperId}` `__NEXT_DATA__` Apollo cache. No auth, no mapping. Agorot → ILS. No 52w high/low. |
-| Stooq (CSV API) | Price fallback for US tickers + S&P 500 when Yahoo is blocked | 3 | **Active** | `https://stooq.com/q/l/?s=<sym>.us&f=spd2t2ohlcv`. No auth. Delayed ~15 min. Derives `dayChange` from prevClose. No 52w high/low. |
-| funder.co.il (scrape) | Historical TASE prices (securities + mutual funds) | 3 | **Active** | Scrapes `seco/{paperId}/s` and `fundo/{fundId}` page-embedded JS literals (`tStockData` / `tStockData2`). Keyed by IBI paper number — no mapping required. Securities returned in agorot (÷100 → ILS); funds already ILS. Returns full inception-to-today history with no date params; the existing 3-day tail-gap gate in `market.service.getHistoricalPrices` keeps bandwidth predictable. Currently the only source for TASE mutual fund history. Fragile to markup drift — re-run `funder/discover-endpoints.ts` (Playwright) if every TASE historical call starts returning `[]` with a `[funder] FunderParseError` log. |
-| Bank of Israel SDMX API | Official daily ILS/USD exchange rates | 3 | **Active** | Free, no auth. Backfills into `exchange_rates` table. Endpoint: `edge.boi.gov.il/FusionEdgeServer/sdmx/v2/data/dataflow/BOI/EXR/1.0/` |
-| Finnhub | News headlines, earnings calendar, corporate events | 5 | Planned | Free tier: 60 calls/min. Cache in `security_events` table. |
+| Service | Use | Notes |
+|---|---|---|
+| Resend | Email (verify/reset) | REST direct. No-op (logs) when key unset. |
+| Yahoo Finance (`yahoo-finance2`) | Live prices, benchmarks | TASE via `.TA` map. 15-min cache. |
+| Stooq | US + S&P 500 fallback | CSV, delayed ~15min, no 52w hi/lo. |
+| TheMarker (scrape) | Unmapped-TASE current quotes | `__NEXT_DATA__` Apollo cache, agorot→ILS. |
+| funder.co.il (scrape) | TASE history (securities + funds) | `seco/`+`fundo/` JS literals; only source for fund history. Fragile to markup drift. |
+| Bank of Israel SDMX | Official ILS/USD rates | Free, backfills `exchange_rates`. |
 
-## AI Agent Data Enrichment Tiers
+## AI Agent Tools (22 built)
 
-See PRD Section 7.5 for full details. Summary:
-
-- **Tier 1 (Phase 4)**: No external APIs — dividend aggregation, cost analysis, performance attribution, streaks, sector metadata, holding period analysis. All derived from existing `trades` table data.
-- **Tier 2 (Phase 3 infra + Phase 4 tools)**: External APIs — live prices, benchmarks, exchange rates, risk metrics. Market data services built in Phase 3; agent tools that consume them ship in Phase 4.
-- **Tier 3 (Phase 5)**: Advanced — technical indicators, news/events, tax intelligence. Requires Finnhub + daily OHLCV history.
-
-**Total agent tools**: 25 (11 core + 7 Tier 1 + 4 Tier 2 + 3 Tier 3 + `get_tax_report`).
-
-**DB tables**: `price_history` (shared, close-only — populated lazily by `market.service.getHistoricalPrices`, rows carry `source ∈ {'yahoo','stooq','funder'}`) is the durable cache backing the equity-curve walk. The `portfolio_snapshots` table that existed in Phase 3 was dropped along with its `snapshot.service.ts` / `routes/snapshots.ts`; the curve is now computed on demand. **Planned new tables**: `security_events` (Phase 5). Existing `securities` table extended with `yahooSymbol`, `industry`, `marketCapBucket` (Phase 3), and `funderKind` (`'seco' | 'fundo' | null` — lazily cached on first successful funder fetch so subsequent TASE history requests skip the heuristic probe). Existing `market_prices` extended with `dayChange`, `dayChangePct`, `high52w`, `low52w`, `volume` (Phase 3). `price_history` will be extended with `open`/`high`/`low`/`volume` in Phase 5 for technical indicators.
+- **Core (11)**: portfolio summary, query trades, P&L breakdown, behavioral report, what-if, market price, create/list/delete alert, trigger/get sync status.
+- **Tier 1 (7)** — no external APIs: dividend summary, cost analysis, performance timeline, streaks, sector exposure, security info, holding-period analysis.
+- **Tier 2 (4)**: benchmark comparison, currency impact, risk report, alternative-investment sim.
+- Tier 3 (technical indicators, news/events, tax) not built — see GitHub issues.
 
 ## Gotchas
 
-- `DATABASE_URL` must be **absolute** `file:` path — relative paths break when commands run from different directories
-- Express `.env` loading uses hardcoded relative path in `config.ts` — update if you move the file
-- `pnpm-workspace.yaml` has `onlyBuiltDependencies` for prisma and esbuild — add new native packages there if they need build scripts
-- Next.js `create-next-app` generated some files we don't use (e.g., `public/` SVGs) — safe to ignore
-- Positions page shows live prices from Yahoo Finance for mapped tickers. TASE tickers without a mapping in `tase-ticker-map.json` fall back to placeholder prices (= avg cost basis). Use `GET /api/market/unmapped` or `POST /api/market/map` to manage mappings.
-- Pre-existing TS2742 errors in Express routes due to `declaration: true` + Express 5 type inference — does not affect runtime (tsx skips type checking)
-- **Transaction filtering**: XLSX import stores ALL transaction types (trades, dividends, fees, taxes, etc.) in the `trades` table. Only `BUY`/`SELL` directions are "core trades" used by P&L, positions, analytics, and the default trades API. Non-trade types are preserved for future processing. The relevant IBI סוג פעולה values for core trades are: `קניה רצף` (TASE buy), `מכירה רצף` (TASE sell), `קניה חול מטח` (US buy), `מכירה חול מטח` (US sell), `מכירה הצעת רכש` (tender-offer sell), `פדיון סופי` (bond/MAKAM final redemption — treated as SELL so the matching BUY lot closes in FIFO), plus `קניה שח` / `מכירה שח` when the security is a TASE mutual fund (see next bullet). `CORE_DIRECTIONS` constant in `@takumi/types` defines `['BUY', 'SELL']`.
-- **DIRECTION_MAP must cover every IBI `סוג פעולה` value** — any row with a type not in the map is skipped and logged as "Unknown transaction type" in Import History (partial status). When a new account surfaces unfamiliar Hebrew types, add them to `DIRECTION_MAP` in `xlsx-import.service.ts`. Known non-trade extras already handled: `דיבידנד בעין` → BONUS (stock distribution / in-kind dividend), `הפחתת הון` → SPLIT (capital reduction, often negative qty), `הפקדה המרה` / `משיכה המרה` → CONVERSION (corporate-action ticker change, paired rows), `קניה מס (( ניעז)` → TAX (withholding on in-kind dividend — note IBI's literal double `((`, single `)`), `משיכת עמלה מטח` → FEE (FX commission), `ריבית מזומן בשח` → INTEREST (interest on ILS cash balance), `משיכת ריבית מטח` → INTEREST (interest on USD/FX cash balance).
-- **XLSX שם נייר patterns** — The XLSX parser extracts tickers from security name prefixes: `דיב/` (dividend), `מסח/` (dividend tax), `מס/` (tax), `COMPANY(TICKER)` (trade), `TICKER US` (trade). FX conversions use `B USD/ILS X.XXX`. TASE uses paper numbers. Admin uses code 900 plus the full 999xxxx range (`/^9{3}\d{4}$/`) — e.g., 9992975, 9992983, 9993975, 9993983 are all tax/admin pseudo-tickers.
-- **`קניה שח` / `מכירה שח` disambiguation** — IBI reuses these two action types for three unrelated events: (a) FX conversions on `B USD/ILS X.XXX` rows, (b) TASE mutual-fund buys/sells paid in shekels (funds like 5124573 that don't trade continuously so don't use `קניה רצף` / `מכירה רצף`), and (c) tax/admin entries on 999xxxx codes. The parser defaults both to `CONVERSION`/`CREDIT` (FX case) and `refineDirection` promotes them to `BUY`/`SELL` when `parseSecurity` classifies the row as `TASE`. Without this refinement TASE mutual-fund positions are invisible to /positions and analytics. Migration script for pre-fix data: `scripts/fix-tase-shekel-trades.ts` (idempotent, re-parses `rawPayload`).
+- `DATABASE_URL` must be an **absolute** path.
+- **Transaction filtering** — XLSX stores ALL types; only BUY/SELL are core (P&L/positions/analytics). `CORE_DIRECTIONS = ['BUY','SELL']`. Migration scripts for pre-fix data live in `scripts/` (idempotent, re-parse `rawPayload`).
+- **DIRECTION_MAP must cover every IBI `סוג פעולה`** — unmapped rows are skipped + logged "Unknown transaction type". Add new Hebrew types in `xlsx-import.service.ts`.
+- **`קניה שח`/`מכירה שח` disambiguation** — reused for FX conversions, TASE mutual-fund trades, and tax/admin rows. `refineDirection` promotes to BUY/SELL only when `parseSecurity` says TASE; without it fund positions are invisible.
+- **Admin pseudo-tickers** — code 900 + the full `/^9{3}\d{4}$/` range are tax/admin, not securities.
+- Pre-existing TS2742 errors in Express routes (Express 5 + `declaration: true`) — runtime-harmless (tsx skips type checking).
+- Unmapped TASE tickers fall back to placeholder prices (= avg cost) on /positions; manage via `GET /api/market/unmapped` / `POST /api/market/map`.

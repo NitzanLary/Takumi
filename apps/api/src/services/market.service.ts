@@ -20,6 +20,7 @@ import {
   type FunderKind,
 } from './funder.service.js';
 import * as priceHistory from './price-history.service.js';
+import { logger } from '../lib/logger.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -36,7 +37,7 @@ try {
     Object.entries(parsed).filter(([k]) => !k.startsWith('_'))
   ) as Record<string, string>;
 } catch {
-  console.warn('[market] Could not load tase-ticker-map.json, TASE tickers will use placeholders');
+  logger.warn({ module: 'market' }, 'Could not load tase-ticker-map.json, TASE tickers will use placeholders');
 }
 
 const yahooFinance = new YahooFinance();
@@ -62,7 +63,7 @@ async function upsertSecurityName(
       update: { name, yahooSymbol },
     });
   } catch (err) {
-    console.warn(`[market] Failed to upsert security name for ${ticker}:`, err);
+    logger.warn({ module: 'market', ticker, err }, 'Failed to upsert security name');
   }
 }
 
@@ -164,7 +165,7 @@ export async function getLatestPrices(
       for (const { ticker, yahooSymbol, currency } of toFetchYahoo) {
         const q = quoteMap.get(yahooSymbol);
         if (!q || q.regularMarketPrice == null) {
-          console.warn(`[market] No quote data for ${yahooSymbol} (ticker: ${ticker})`);
+          logger.warn({ module: 'market', yahooSymbol, ticker }, 'No quote data');
           // Mapped-but-unavailable TASE tickers still deserve a TheMarker fallback.
           if (isTaseTicker(ticker, tickers)) {
             toFetchTheMarker.push({ ticker, currency });
@@ -212,7 +213,7 @@ export async function getLatestPrices(
         }
       }
     } catch (err) {
-      console.error('[market] Yahoo Finance fetch error:', err);
+      logger.error({ module: 'market', err }, 'Yahoo Finance fetch error');
       for (const { ticker, currency } of toFetchYahoo) {
         if (result.has(ticker)) continue;
         if (isTaseTicker(ticker, tickers)) {
@@ -450,9 +451,9 @@ async function fetchFromUpstream(
       if (points.length > 0) {
         return { source: 'yahoo', points };
       }
-      console.warn(`[market] Yahoo returned no historical quotes for ${yahooSymbol}`);
+      logger.warn({ module: 'market', yahooSymbol }, 'Yahoo returned no historical quotes');
     } catch (err) {
-      console.warn(`[market] Yahoo historical fetch failed for ${yahooSymbol}:`, err);
+      logger.warn({ module: 'market', yahooSymbol, err }, 'Yahoo historical fetch failed');
     }
   }
 
@@ -501,7 +502,7 @@ async function fetchFunderHistoricalWithKindDiscovery(
       cachedKind = row.funderKind;
     }
   } catch (err) {
-    console.warn(`[market] funder_kind lookup failed for ${ticker}:`, err);
+    logger.warn({ module: 'market', ticker, err }, 'funder_kind lookup failed');
   }
 
   const firstKind: FunderKind = cachedKind ?? guessFunderKind(ticker);
@@ -547,7 +548,7 @@ function persistFunderKind(ticker: string, kind: FunderKind): void {
       update: { funderKind: kind },
     })
     .catch((err) =>
-      console.warn(`[market] Failed to persist funder_kind for ${ticker}:`, err),
+      logger.warn({ module: 'market', ticker, err }, 'Failed to persist funder_kind'),
     );
 }
 
@@ -614,7 +615,7 @@ export async function getHistoricalPrices(
         })),
       );
     } catch (err) {
-      console.warn(`[market] Failed to persist price_history for ${ticker}:`, err);
+      logger.warn({ module: 'market', ticker, err }, 'Failed to persist price_history');
     }
   }
 
@@ -641,8 +642,9 @@ export async function getHistoricalPrices(
   }
 
   if (upstreamAttempted && !fetched && cached.length > 0) {
-    console.warn(
-      `[market] Upstream fetch failed for ${ticker}; serving ${cached.length} cached row(s)`,
+    logger.warn(
+      { module: 'market', ticker, cachedRows: cached.length },
+      'Upstream fetch failed; serving cached rows',
     );
   }
 

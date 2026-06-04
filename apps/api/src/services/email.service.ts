@@ -7,6 +7,7 @@
  */
 
 import { config } from '../lib/config.js';
+import { logger } from '../lib/logger.js';
 
 interface SendEmailParams {
   to: string;
@@ -16,8 +17,7 @@ interface SendEmailParams {
 
 export async function sendEmail({ to, subject, html }: SendEmailParams): Promise<void> {
   if (!config.email.resendApiKey) {
-    console.log(`[email] (no RESEND_API_KEY set) Would send to ${to}: ${subject}`);
-    console.log(`[email] Body:\n${html}\n`);
+    logger.info({ module: 'email', to, subject, html }, 'no RESEND_API_KEY set — email not sent');
     return;
   }
 
