@@ -10,32 +10,9 @@ import type { PnlWindow } from '@takumi/types';
 import { prisma } from '../lib/db.js';
 import { getCurrentRate } from './exchange-rate.service.js';
 import { logger } from '../lib/logger.js';
-
-export interface MatchedLot {
-  ticker: string;
-  securityName: string;
-  market: string;
-  currency: string;
-  quantity: number;
-  buyPrice: number;
-  sellPrice: number;
-  buyDate: Date;
-  sellDate: Date;
-  commission: number; // combined buy + sell commission (prorated)
-  realizedPnl: number;
-  holdingDays: number;
-}
-
-export interface OpenLot {
-  ticker: string;
-  securityName: string;
-  market: string;
-  currency: string;
-  quantity: number;
-  price: number;
-  date: Date;
-  commission: number;
-}
+import { matchFifoLots } from './pnl-matching.js';
+import type { MatchedLot, OpenLot } from './pnl-matching.js';
+export type { MatchedLot, OpenLot } from './pnl-matching.js';
 
 export interface TickerPnl {
   ticker: string;
@@ -50,21 +27,6 @@ export interface TickerPnl {
   avgHoldingDays: number;
   totalBuyQty: number;
   totalSellQty: number;
-}
-
-interface BuyLot {
-  ticker: string;
-  securityName: string;
-  market: string;
-  currency: string;
-  remainingQty: number;
-  price: number;
-  date: Date;
-  commissionPerShare: number;
-}
-
-function toNum(d: unknown): number {
-  return Number(d);
 }
 
 // In-memory cache for FIFO results (1-minute TTL), keyed by userId.
@@ -102,126 +64,7 @@ export async function runFifoMatching(userId: string): Promise<{
     orderBy: [{ tradeDate: 'asc' }, { createdAt: 'asc' }],
   });
 
-  // Group by ticker
-  const byTicker = new Map<string, typeof trades>();
-  for (const t of trades) {
-    const existing = byTicker.get(t.ticker) || [];
-    existing.push(t);
-    byTicker.set(t.ticker, existing);
-  }
-
-  const matchedLots: MatchedLot[] = [];
-  const openLots: OpenLot[] = [];
-
-  for (const [ticker, tickerTrades] of byTicker) {
-    const buyQueue: BuyLot[] = [];
-
-    for (const trade of tickerTrades) {
-      const qty = toNum(trade.quantity);
-      const price = toNum(trade.price);
-      const commission = toNum(trade.commission);
-
-      if (trade.direction === 'BUY') {
-        buyQueue.push({
-          ticker: trade.ticker,
-          securityName: trade.securityName,
-          market: trade.market,
-          currency: trade.currency,
-          remainingQty: qty,
-          price,
-          date: trade.tradeDate,
-          commissionPerShare: qty > 0 ? commission / qty : 0,
-        });
-      } else if (trade.direction === 'SPLIT') {
-        // IBI records splits as "הטבה" (bonus) rows: qty = bonus shares added.
-        // Distribute bonus across the currently-open lots, preserving total
-        // cost basis: multiply remainingQty by ratio, divide price & commission/share.
-        const openQty = buyQueue.reduce((s, l) => s + l.remainingQty, 0);
-        if (openQty > 0 && qty !== 0) {
-          const ratio = (openQty + qty) / openQty;
-          for (const lot of buyQueue) {
-            lot.remainingQty *= ratio;
-            lot.price /= ratio;
-            lot.commissionPerShare /= ratio;
-          }
-        }
-      } else {
-        // SELL — match against oldest buy lots (FIFO)
-        // MAKAM / bond "פדיון סופי" (final redemption) rows have שער ביצוע = 0
-        // because there is no per-share sell price on redemption — the cash is
-        // reported in תמורה בשקלים / תמורה במט"ח. Fall back to proceeds ÷ qty
-        // so FIFO doesn't treat the exit as $0 and manufacture a loss equal to
-        // the cost basis.
-        let effectiveSellPrice = price;
-        if (effectiveSellPrice === 0 && qty > 0) {
-          const proceeds =
-            trade.currency === 'USD'
-              ? Math.abs(toNum(trade.proceedsFx ?? 0))
-              : Math.abs(toNum(trade.proceedsIls ?? 0));
-          if (proceeds > 0) effectiveSellPrice = proceeds / qty;
-        }
-
-        let remainingToSell = qty;
-        const sellCommPerShare = qty > 0 ? commission / qty : 0;
-
-        while (remainingToSell > 0 && buyQueue.length > 0) {
-          const lot = buyQueue[0];
-          const matchQty = Math.min(remainingToSell, lot.remainingQty);
-
-          const buyCommission = matchQty * lot.commissionPerShare;
-          const sellCommission = matchQty * sellCommPerShare;
-          const totalCommission = buyCommission + sellCommission;
-
-          const grossPnl = matchQty * (effectiveSellPrice - lot.price);
-          const realizedPnl = grossPnl - totalCommission;
-
-          const holdingDays = Math.round(
-            (trade.tradeDate.getTime() - lot.date.getTime()) / (1000 * 60 * 60 * 24)
-          );
-
-          matchedLots.push({
-            ticker: trade.ticker,
-            securityName: trade.securityName,
-            market: trade.market,
-            currency: trade.currency,
-            quantity: matchQty,
-            buyPrice: lot.price,
-            sellPrice: effectiveSellPrice,
-            buyDate: lot.date,
-            sellDate: trade.tradeDate,
-            commission: totalCommission,
-            realizedPnl,
-            holdingDays,
-          });
-
-          lot.remainingQty -= matchQty;
-          remainingToSell -= matchQty;
-
-          if (lot.remainingQty <= 0) {
-            buyQueue.shift();
-          }
-        }
-      }
-    }
-
-    // Remaining buy lots are open positions
-    for (const lot of buyQueue) {
-      if (lot.remainingQty > 0) {
-        openLots.push({
-          ticker: lot.ticker,
-          securityName: lot.securityName,
-          market: lot.market,
-          currency: lot.currency,
-          quantity: lot.remainingQty,
-          price: lot.price,
-          date: lot.date,
-          commission: lot.remainingQty * lot.commissionPerShare,
-        });
-      }
-    }
-  }
-
-  const result = { matchedLots, openLots };
+  const result = matchFifoLots(trades);
   fifoCache.set(userId, { result, at: Date.now() });
   return result;
 }
