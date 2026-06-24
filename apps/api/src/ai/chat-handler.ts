@@ -23,7 +23,7 @@ import {
 
 const MAX_TOOL_CALLS = 10;
 const MAX_TOKENS = 4096;
-const MODEL = 'claude-sonnet-4-20250514';
+const MODEL = 'claude-opus-4-8';
 
 let anthropicClient: Anthropic | null = null;
 
