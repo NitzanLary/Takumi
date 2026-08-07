@@ -18,6 +18,11 @@ export function middleware(req: NextRequest) {
   // the rewritten path; being explicit here is a belt-and-braces guard.)
   if (pathname.startsWith("/api/")) return NextResponse.next();
 
+  // OAuth discovery documents for the MCP connector. These are fetched by
+  // Anthropic's infrastructure with no cookie, so redirecting them to /login
+  // would break connector setup before it starts.
+  if (pathname.startsWith("/.well-known/")) return NextResponse.next();
+
   // Public pages: signup, login, password reset flow.
   if (PUBLIC_PATHS.has(pathname)) return NextResponse.next();
 

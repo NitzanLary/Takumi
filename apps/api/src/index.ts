@@ -16,6 +16,9 @@ import marketRouter from "./routes/market.js";
 import exchangeRatesRouter from "./routes/exchange-rates.js";
 import stockRouter from "./routes/stock.js";
 import chatRouter from "./routes/chat.js";
+import { oauthRouter } from "./oauth/routes.js";
+import { wellKnownRouter } from "./oauth/metadata.js";
+import { mcpRouter } from "./mcp/http-server.js";
 import { registerTools } from "./ai/chat-handler.js";
 import { allToolSchemas, executeTool } from "./ai/tools/index.js";
 
@@ -53,6 +56,16 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 app.use("/api/auth", authRouter);
+
+// OAuth 2.1 authorization server for the MCP custom connector. Public by
+// necessity — these endpoints are how a client obtains credentials. /authorize
+// does its own session check and bounces to /login when there isn't one.
+app.use(wellKnownRouter);
+app.use("/api/oauth", oauthRouter);
+
+// The MCP resource server authenticates with a bearer token rather than the
+// session cookie, so it is mounted before requireAuth and guards itself.
+app.use("/api/mcp", mcpRouter);
 
 // All routes below require an authenticated session.
 app.use("/api", requireAuth);

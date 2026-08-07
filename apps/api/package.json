@@ -7,13 +7,16 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "tsx src/index.ts",
+    "mcp": "tsx src/mcp/stdio-server.ts",
     "bootstrap-users": "tsx ../../scripts/bootstrap-users.ts",
     "test": "vitest run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.52",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@takumi/db": "workspace:*",
     "@takumi/types": "workspace:*",
+    "ajv": "^8.20.0",
     "bcryptjs": "^3.0.3",
     "cookie": "^1.1.1",
     "cors": "^2",

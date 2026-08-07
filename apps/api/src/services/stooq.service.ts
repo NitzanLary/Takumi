@@ -18,9 +18,49 @@
  */
 
 import type { MarketQuote, Currency } from '@takumi/types';
+import { logger } from '../lib/logger.js';
 
 const USER_AGENT =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+
+/**
+ * As of 2026-08 Stooq no longer serves these CSVs to scripts: `q/d/l/` (history)
+ * returns a JavaScript proof-of-work challenge, and `q/l/` (quote) 404s on both
+ * the .com and .pl mirrors. Both paths already degrade to null, but they were
+ * still costing an HTTP round-trip per ticker on every fallback.
+ *
+ * Once a response is recognised as a block, the source disables itself for the
+ * lifetime of the process and logs once. Nothing here retries automatically —
+ * re-enabling is a deliberate act, because whether to solve the challenge, swap
+ * providers, or drop the fallback is a product decision, not a retry policy.
+ */
+let disabledReason: string | null = null;
+
+function detectBlock(body: string): string | null {
+  if (/requires JavaScript to verify your browser|__verify/i.test(body)) {
+    return 'proof-of-work browser challenge';
+  }
+  if (/page you requested does not exist|nie istnieje/i.test(body)) {
+    return 'endpoint returns 404 (URL shape changed)';
+  }
+  return null;
+}
+
+/** True when the source has taken itself offline; callers should skip it. */
+export function isStooqDisabled(): boolean {
+  return disabledReason !== null;
+}
+
+function disable(endpoint: string, reason: string): null {
+  if (!disabledReason) {
+    disabledReason = reason;
+    logger.warn(
+      { module: 'stooq', endpoint, reason },
+      'Stooq is blocking programmatic access — disabling the fallback for this process'
+    );
+  }
+  return null;
+}
 
 /** Convert our internal ticker to Stooq's symbol format. Returns null if Stooq can't serve it. */
 export function resolveStooqSymbol(ticker: string, market: string): string | null {
@@ -36,6 +76,8 @@ export async function fetchStooqQuote(
   stooqSymbol: string,
   currency: Currency
 ): Promise<MarketQuote | null> {
+  if (isStooqDisabled()) return null;
+
   const url = `https://stooq.com/q/l/?s=${encodeURIComponent(stooqSymbol)}&f=spd2t2ohlcv`;
   let csv: string;
   try {
@@ -43,11 +85,13 @@ export async function fetchStooqQuote(
       headers: { 'User-Agent': USER_AGENT, Accept: 'text/csv' },
       signal: AbortSignal.timeout(8_000),
     });
+    csv = await res.text();
+    const blocked = detectBlock(csv);
+    if (blocked) return disable('quote', blocked);
     if (!res.ok) {
       console.warn(`[stooq] HTTP ${res.status} for ${stooqSymbol}`);
       return null;
     }
-    csv = await res.text();
   } catch (err) {
     console.warn(`[stooq] fetch failed for ${stooqSymbol}:`, err);
     return null;
@@ -110,6 +154,8 @@ export async function fetchStooqHistorical(
 ): Promise<Array<{ date: string; close: number }>> {
   const fmt = (d: Date) =>
     `${d.getUTCFullYear()}${String(d.getUTCMonth() + 1).padStart(2, '0')}${String(d.getUTCDate()).padStart(2, '0')}`;
+  if (isStooqDisabled()) return [];
+
   const url = `https://stooq.com/q/d/l/?s=${encodeURIComponent(stooqSymbol)}&d1=${fmt(from)}&d2=${fmt(to)}&i=d`;
   let csv: string;
   try {
@@ -117,11 +163,16 @@ export async function fetchStooqHistorical(
       headers: { 'User-Agent': USER_AGENT, Accept: 'text/csv' },
       signal: AbortSignal.timeout(15_000),
     });
+    csv = await res.text();
+    const blocked = detectBlock(csv);
+    if (blocked) {
+      disable('historical', blocked);
+      return [];
+    }
     if (!res.ok) {
       console.warn(`[stooq] historical HTTP ${res.status} for ${stooqSymbol}`);
       return [];
     }
-    csv = await res.text();
   } catch (err) {
     console.warn(`[stooq] historical fetch failed for ${stooqSymbol}:`, err);
     return [];

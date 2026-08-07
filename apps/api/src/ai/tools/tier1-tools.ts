@@ -96,7 +96,7 @@ export const tier1ToolSchemas: Anthropic.Messages.Tool[] = [
   {
     name: 'get_sector_exposure',
     description:
-      'Get portfolio allocation by sector and industry. Shows current position weights grouped by sector with concentration warnings.',
+      'Get portfolio allocation by sector. Returns `sectors` (weight % of the whole portfolio, ILS-normalized), an `unclassified` bucket for holdings with no sector mapping, and `warnings`. Many TASE funds are unmapped — always check `unclassified.weight` before describing the sector split, and say so if it is large.',
     input_schema: {
       type: 'object' as const,
       properties: {},
@@ -391,18 +391,32 @@ async function execGetSectorExposure(userId: string): Promise<unknown> {
     return { message: 'No open positions to analyze.' };
   }
 
+  // `sector-map.json` only covers a couple dozen US tickers, so it alone leaves
+  // every TASE paper number unclassified. `securities.sector` (populated from
+  // Yahoo) is the broader source; the static map stays as an override.
+  const securities = await prisma.security.findMany({
+    where: { ticker: { in: positions.map((p) => p.ticker) } },
+    select: { ticker: true, sector: true },
+  });
+  const dbSector = new Map(securities.map((s) => [s.ticker, s.sector]));
+
   const bySector = new Map<string, { valueIls: number; weight: number; tickers: string[] }>();
+  const unclassified = { valueIls: 0, weight: 0, tickers: [] as string[] };
 
   for (const p of positions) {
-    const mapping = sectorMap[p.ticker];
-    const sector = mapping?.sector || 'Unknown';
+    const sector = sectorMap[p.ticker]?.sector || dbSector.get(p.ticker) || null;
 
-    const entry = bySector.get(sector) || { valueIls: 0, weight: 0, tickers: [] };
+    // Unclassified positions are reported separately rather than as an
+    // "Unknown" sector — a large Unknown bucket otherwise reads as a real
+    // concentration and triggers a nonsense warning.
+    const entry = sector
+      ? bySector.get(sector) || { valueIls: 0, weight: 0, tickers: [] }
+      : unclassified;
     // Use ILS-normalized value so TASE and US positions aggregate coherently.
     entry.valueIls += p.marketValueIls;
     entry.weight += p.weight;
     entry.tickers.push(p.ticker);
-    bySector.set(sector, entry);
+    if (sector) bySector.set(sector, entry);
   }
 
   const sectors = Array.from(bySector.entries())
@@ -421,8 +435,24 @@ async function execGetSectorExposure(userId: string): Promise<unknown> {
       warnings.push(`High concentration in ${s.sector}: ${s.weight.toFixed(1)}% of portfolio`);
     }
   }
+  if (unclassified.weight > 20) {
+    warnings.push(
+      `${unclassified.weight.toFixed(1)}% of the portfolio has no sector mapping. ` +
+        `The sector weights above cover only the remaining ${(100 - unclassified.weight).toFixed(1)}% — ` +
+        `do not present them as a full breakdown.`
+    );
+  }
 
-  return { sectors, warnings };
+  return {
+    sectors,
+    unclassified: {
+      marketValueIls: unclassified.valueIls,
+      weight: unclassified.weight,
+      positionCount: unclassified.tickers.length,
+      tickers: unclassified.tickers,
+    },
+    warnings,
+  };
 }
 
 async function execGetSecurityInfo(

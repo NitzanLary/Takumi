@@ -5,13 +5,16 @@
  *   - Securities ("seco"):  https://www.funder.co.il/seco/{paperId}/s
  *   - Funds     ("fundo"):  https://www.funder.co.il/fundo/{fundId}
  *
- * Both pages server-side render the full historical series inline as a JavaScript
- * variable literal. There is no JSON API — we fetch the page HTML and extract the
- * literal. The only header required is a non-empty User-Agent (empty UA → 403 WAF).
+ * Both pages server-side render the full historical series into the HTML. There is
+ * no JSON API — we fetch the page and extract it. The only header required is a
+ * non-empty User-Agent (empty UA → 403 WAF).
  *
- * Differences between the two:
- *   security: var tStockData  = [["DD/MM/YYYY", "chg%", "close", "vol", "high",
- *                                 "low", "open", "close"], ...]   // prices in agorot
+ * Payload location differs per page, and funder has changed it before, so each
+ * endpoint carries an ordered list of extractors and we take the first that hits:
+ *   security: <textarea id="tStockDataRaw"> holding an HTML-escaped
+ *             [["DD/MM/YYYY","chg%","close","vol","high","low","open","close"], ...]
+ *             (since ~2026-08; previously inlined as `var tStockData = [[...]];`,
+ *             kept as a fallback). Prices in agorot.
  *   fund:     var tStockData2 = {"x":[{"c":"YYYY-MM-DD","p":NAV}, ...]}  // NAV in agorot
  *
  * BOTH endpoints quote prices in agorot, not ILS. Earlier comments in the
@@ -24,9 +27,12 @@
  * query parameter. We filter client-side via opts.start / opts.end.
  *
  * Fragile by nature — funder.co.il may change variable names or markup at any time.
- * Symptom: fetchFunderHistorical returns [] and the console shows a FunderParseError.
- * Recovery: re-run `funder/discover-endpoints.ts` (Playwright) to re-derive the
- * variable names, then update the literalRegex entries below.
+ * Symptom: fetchHistory throws FunderParseError and callers see [].
+ * Recovery: fetch the page with a browser User-Agent and look at where the series
+ * actually lives, then prepend an extractor to the relevant ENDPOINTS entry —
+ * existing ones stay as fallbacks. `funder/discover-endpoints.ts` (Playwright) can
+ * re-derive variable names if the payload is back in JS, but the 2026-08 break was
+ * a move into a hidden <textarea> that plain curl reveals faster.
  *
  * Ported from a verified standalone driver; reverse-engineering notes and the
  * Playwright recovery script live in `funder/` (NOTES.md, discover-endpoints.ts).
@@ -122,9 +128,47 @@ interface RawFundPayload {
 
 interface EndpointConfig {
   url: (id: number) => string;
-  /** Regex must have a single capture group containing the JS literal. */
-  literalRegex: RegExp;
+  /** Name of the JS variable, for error messages. */
+  literalName: string;
+  /** Ordered extraction strategies — the first to yield a literal wins. */
+  extractors: Array<(html: string) => string | null>;
   parse: (literal: string, url: string) => PriceBar[];
+}
+
+/**
+ * Pull the payload out of a hidden `<textarea>`. As of 2026-08 funder no longer
+ * inlines the series as a JS literal on `seco/` pages; it renders
+ * `var tStockData = "";` and hydrates it client-side from
+ * `<textarea id="tStockDataRaw">`, whose contents are HTML-escaped.
+ *
+ * A present-but-empty textarea means "no data for this instrument", which is a
+ * different failure from "markup changed" — return an empty literal so the
+ * caller raises FunderEmptyError rather than FunderParseError.
+ */
+function fromTextarea(id: string, emptyLiteral: string) {
+  const re = new RegExp(`<textarea[^>]*\\bid="${id}"[^>]*>([\\s\\S]*?)</textarea>`, 'i');
+  return (html: string): string | null => {
+    const m = html.match(re);
+    if (!m) return null;
+    const body = m[1].trim();
+    return body ? decodeHtmlEntities(body) : emptyLiteral;
+  };
+}
+
+/** Legacy form: the literal inlined directly in a `var` declaration. */
+function fromJsLiteral(re: RegExp) {
+  return (html: string): string | null => html.match(re)?.[1] ?? null;
+}
+
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&quot;/g, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    // Ampersand last, so "&amp;quot;" does not decode into a quote.
+    .replace(/&amp;/g, '&');
 }
 
 const DEFAULT_USER_AGENT =
@@ -133,12 +177,20 @@ const DEFAULT_USER_AGENT =
 const ENDPOINTS: Record<Instrument, EndpointConfig> = {
   security: {
     url: (id) => `https://www.funder.co.il/seco/${id}/s`,
-    literalRegex: /var\s+tStockData\s*=\s*(\[\[[^\n]*?\]\])\s*;/,
+    literalName: 'tStockData',
+    extractors: [
+      fromTextarea('tStockDataRaw', '[]'),
+      fromJsLiteral(/var\s+tStockData\s*=\s*(\[\[[^\n]*?\]\])\s*;/),
+    ],
     parse: parseSecurityLiteral,
   },
   fund: {
     url: (id) => `https://www.funder.co.il/fundo/${id}`,
-    literalRegex: /var\s+tStockData2\s*=\s*(\{"x":\[[^\n]*?\]\})\s*;/,
+    literalName: 'tStockData2',
+    extractors: [
+      fromJsLiteral(/var\s+tStockData2\s*=\s*(\{"x":\[[^\n]*?\]\})\s*;/),
+      fromTextarea('tStockData2Raw', '{"x":[]}'),
+    ],
     parse: parseFundLiteral,
   },
 };
@@ -159,15 +211,19 @@ export async function fetchHistory(
   const url = cfg.url(id);
   const html = await fetchHtml(url, opts);
 
-  const match = html.match(cfg.literalRegex);
-  if (!match || !match[1]) {
+  let literal: string | null = null;
+  for (const extract of cfg.extractors) {
+    literal = extract(html);
+    if (literal !== null) break;
+  }
+  if (literal === null) {
     throw new FunderParseError(
-      `Could not find ${kind === 'security' ? 'tStockData' : 'tStockData2'} literal in ${url}. ` +
-      `funder.co.il may have changed the page markup — re-run discover-endpoints.ts.`,
+      `Could not find ${cfg.literalName} data in ${url}. funder.co.il may have changed ` +
+      `the page markup again — inspect the HTML and add an extractor in ENDPOINTS.`,
     );
   }
 
-  let bars = cfg.parse(match[1], url);
+  let bars = cfg.parse(literal, url);
   if (bars.length === 0) throw new FunderEmptyError(url);
 
   bars.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));

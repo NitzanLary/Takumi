@@ -320,8 +320,20 @@ async function execGetMarketPrice(
   input: Record<string, unknown>
 ): Promise<unknown> {
   const ticker = input.ticker as string;
-  const market = (input.market as string) || 'NYSE';
-  const currency = market === 'TASE' ? 'ILS' : 'USD';
+
+  // `market` is optional, and a bare TASE paper number is the documented way to
+  // ask for an Israeli security — so defaulting to NYSE/USD would report an ILS
+  // price as USD. Prefer what `securities` already records; `getLatestPrices`
+  // trusts the currency we hand it and will not correct us.
+  const security = ticker
+    ? await prisma.security.findUnique({
+        where: { ticker },
+        select: { market: true, currency: true },
+      })
+    : null;
+
+  const market = security?.market || (input.market as string) || 'NYSE';
+  const currency = security?.currency || (market === 'TASE' ? 'ILS' : 'USD');
 
   const prices = await getLatestPrices([{ ticker, market, currency }]);
   const quote = prices.get(ticker);

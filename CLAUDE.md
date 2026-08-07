@@ -48,6 +48,8 @@ apps/
                      #   exchange-rate, equity-curve, risk, whatif, alt-investment, stock-detail, email
     src/data/        # tase-ticker-map.json, sector-map.json
     src/ai/          # system-prompt, chat-handler, conversation.service, tools/ (core, tier1, tier2)
+    src/mcp/         # tools.ts (MCP adapter over ai/tools), stdio-server.ts (local), http-server.ts (remote)
+    src/oauth/       # OAuth 2.1 AS for the custom connector: metadata.ts, routes.ts, tokens.ts
 packages/
   db/      # Prisma schema + client (@takumi/db singleton)
   types/   # Shared TS interfaces (@takumi/types)
@@ -62,6 +64,9 @@ pnpm --filter @takumi/api dev            # Express on :3001
 pnpm --filter @takumi/web dev            # Next.js on :3000
 pnpm --filter @takumi/db db:generate     # regenerate Prisma client
 pnpm --filter @takumi/db db:push         # push schema
+# Local stdio MCP server (see src/mcp/). --silent is required: pnpm's default
+# banner goes to stdout, which is the JSON-RPC transport.
+MCP_USER_ID=<user-id> pnpm --silent --filter @takumi/api mcp
 ```
 
 ## Environment Variables
@@ -81,7 +86,7 @@ pnpm --filter @takumi/db db:push         # push schema
 
 ## Database
 
-Schema in `packages/db/prisma/schema.prisma` (Postgres). All monetary fields use `Decimal`. **12 tables:**
+Schema in `packages/db/prisma/schema.prisma` (Postgres). All monetary fields use `Decimal`. **15 tables:**
 
 | Table | Purpose / Key Notes |
 |---|---|
@@ -96,6 +101,9 @@ Schema in `packages/db/prisma/schema.prisma` (Postgres). All monetary fields use
 | `exchange_rates` | Shared daily ILS/USD. Unique `date`. |
 | `price_history` | Shared daily closes (close-only). Unique `(ticker, date)`. Populated lazily by `market.service.getHistoricalPrices`. |
 | `ai_conversations` / `ai_messages` | Per-user chat sessions + messages (role user/assistant/tool, optional `tool_calls`). |
+| `oauth_clients` | DCR registrations for the MCP connector. Claude registers a new client per connection, so rows accumulate. |
+| `oauth_grants` | Pending authorization codes. Single-use (`consumed_at`), 1-min TTL, carries the PKCE challenge + RFC 8707 `resource`. |
+| `oauth_tokens` | Issued access/refresh tokens, stored as SHA-256 hashes. `resource` is the audience; `revoked_at` set on rotation or replay. |
 
 ## API Routes (Express)
 
@@ -110,6 +118,8 @@ All except `/api/health` and `/api/auth/*` need a session.
 - **exchange-rates** `GET /api/exchange-rates`, `POST /backfill`.
 - **stock** `GET /api/stock/:ticker/summary|open-lots|round-trips|chart` (works for open & closed positions).
 - **chat** `POST /api/chat` (SSE), `GET|DELETE /api/chat/conversations[/:id]`.
+- **oauth** (public) `POST /api/oauth/register`, `GET|POST /api/oauth/authorize`, `POST /api/oauth/token`; discovery at `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource[/api/mcp]`.
+- **mcp** (bearer, not session) `POST /api/mcp` — Streamable HTTP MCP endpoint for the Claude custom connector.
 
 ## Frontend Pages
 
@@ -143,9 +153,17 @@ Auth pages render without sidebar/topbar chrome; all others require a session (m
 - **Historical prices** — `market.service.getHistoricalPrices` is DB-first: read `price_history`, fill only the **tail gap** from upstream (mid-range gaps = market holidays), bulk-insert (immutable, no UPDATE), merge+dedupe. `source ∈ {yahoo,stooq,funder}`. `StockChart.tsx` plots closes with buy/sell ReferenceDots + avg-cost ReferenceLine.
 - **AI chat** — right-side drawer (400px / full-width mobile), Zustand `chat-store.ts`, SSE from `POST /api/chat` via Next route handler `app/api/chat/route.ts` (NOT the rewrite — flushes per event). `react-markdown` rendering, collapsible tool indicators, Stop via AbortController. `FloatingChatBar` hands off draft text on open.
 - **AI tools** — defined in `apps/api/src/ai/tools/` by tier; registry in `tools/index.ts`; agentic loop in `chat-handler.ts`. Executor signature `(userId, input)`. `runFifoMatching()` cached 1-min TTL.
+- **MCP (`src/mcp/`)** — exposes the same tool registry over the Model Context Protocol. `tools.ts` is transport-agnostic and shared by both servers: it filters out the 3 write tools (`create_alert`/`delete_alert`/`trigger_sync`), tags the rest `readOnlyHint`, **validates arguments against each tool's JSON Schema with ajv** (neither the MCP `Server` nor the Anthropic tool loop does — unvalidated, a bad `groupBy` enum silently returns the default grouping), serialises results BigInt-safely, and truncates past 150k chars (claude.ai's tool-result cap). `INSTRUCTIONS` there is the MCP analogue of `buildSystemPrompt` — a connector ships tools with no system prompt, so the ILS-aggregate/agorot/per-currency invariants must travel with the server or results get misread. Uses the SDK's low-level `Server` because `McpServer.registerTool` accepts only Zod, and our schemas are already JSON Schema.
+  - `stdio-server.ts` — local dev/testing; user pinned via `MCP_USER_ID`.
+  - `http-server.ts` — the remote connector, `POST /api/mcp`. Streamable HTTP, **stateless** (fresh `Server` + transport per request) with **`enableJsonResponse: true` so replies are never SSE** — requests arrive through the Next rewrite, which does not flush SSE per event. Auth is a bearer token, not the session cookie, so it mounts *before* `requireAuth` and guards itself. Unauthenticated requests MUST return 401 with `WWW-Authenticate: Bearer resource_metadata="…"` — that header is how Claude discovers the AS, and it is ignored on a 200.
+- **OAuth 2.1 / custom connector (`src/oauth/`)** — Takumi is its own authorization server, so Claude can connect as a remote MCP connector on a personal plan (`static_headers` is beta and org-shared, which would collapse per-user scoping). Everything is anchored on `APP_URL` — the public web origin — since the API is private on Railway. Issuer = `APP_URL`; resource = `${APP_URL}/api/mcp`.
+  - `metadata.ts` — RFC 8414 AS metadata at `/.well-known/oauth-authorization-server` and RFC 9728 PRM at `/.well-known/oauth-protected-resource[/api/mcp]`. Mounted at the **root**, not under `/api`; `next.config.mjs` rewrites `/.well-known/*` and `middleware.ts` exempts it (Anthropic fetches these with no cookie).
+  - `routes.ts` — `/api/oauth/register` (RFC 7591 DCR, JSON), `/api/oauth/authorize` (GET consent page + POST approve), `/api/oauth/token` (**form-urlencoded** — needs its own `urlencoded()` parser; JSON-only 415s). S256 PKCE required, `plain` rejected. `/authorize` reuses the `takumi_session` cookie and bounces to `/login?next=…` — the web login *is* the consent login, no second identity system. Loopback redirect URIs match port-agnostically (RFC 8252 §7.3) for Claude Code.
+  - `tokens.ts` — tokens stored as SHA-256 hashes like `sessions`. Access 1h, refresh 30d rotated on every use. Replaying an authorization code revokes every token for that client/user (OAuth 2.1 replay defence). `resolveAccessToken` enforces RFC 8707 audience binding — a token minted for another resource is rejected, never merely ignored.
+  - Callback to register if submitting to the directory: `https://claude.ai/api/mcp/auth_callback`. Anthropic egress is `160.79.104.0/21`.
 - **Investor profile (AI framing)** — `users.investor_horizon`/`investor_goal`/`investor_notes` declared at onboarding, editable in `/settings`. `buildSystemPrompt` injects them plus an inferred horizon from `avgHoldingDays`. Enum values mirrored in `auth.ts`, `UserProvider.tsx`, `InvestorProfileForm.tsx` — keep in sync.
 - **Stock detail** — `stock-detail.service.ts` composes existing services (no own SQL), filtering cached FIFO output. USD currency-impact splits unrealized P&L into price vs FX move via historical BOI rates. URLs use `encodeURIComponent(ticker)`.
-- **Logging (API)** — structured via **pino** (`lib/logger.ts`). `pino-http` (mounted in `index.ts` after `express.json()`) attaches a per-request child logger on `req.log` + a `req.id` (reuses incoming `x-request-id`, else a UUID, echoed back as a response header) and logs every request with method/url/status/responseTime/`userId`. Pretty output in dev, raw JSON in prod (`LOG_LEVEL` env, default `info`). In services (no `req`) import the base `logger`; pass context as the first arg object with a `module` field, e.g. `logger.warn({ module: 'market', ticker, err }, 'msg')`. Don't add new `console.*`.
+- **Logging (API)** — structured via **pino** (`lib/logger.ts`). `pino-http` (mounted in `index.ts` after `express.json()`) attaches a per-request child logger on `req.log` + a `req.id` (reuses incoming `x-request-id`, else a UUID, echoed back as a response header) and logs every request with method/url/status/responseTime/`userId`. Pretty output in dev, raw JSON in prod (`LOG_LEVEL` env, default `info`). `LOG_TO_STDERR=1` moves output to fd 2 — set by the MCP stdio server, which owns stdout as its JSON-RPC transport. In services (no `req`) import the base `logger`; pass context as the first arg object with a `module` field, e.g. `logger.warn({ module: 'market', ticker, err }, 'msg')`. Don't add new `console.*`.
 - **Errors (API)** — central `error-handler.ts` (last middleware). Express 5 auto-forwards async rejections here, so routes need no try/catch. Throw `AppError(statusCode, code, message)` (`lib/errors.ts`) for precise non-500s; anything else is a 500 (message hidden in prod). Always responds `{ error: code, message, statusCode, requestId }` and logs the full stack with request/user context.
 - **Error boundaries (web)** — App Router `error.tsx` per major segment (`dashboard`, `positions`, `positions/[ticker]`, `analytics`, `history`, `settings`) + a root `app/error.tsx` and `app/global-error.tsx` (own `<html>`, catches root-layout failures). Each is a thin `"use client"` wrapper rendering the shared `components/ErrorFallback.tsx` (Try-again via `reset()`) and `console.error`-logging the error. A segment crash keeps sidebar/topbar chrome; no external telemetry sink yet.
 
@@ -164,9 +182,9 @@ Hosted at https://web-production-7a48c.up.railway.app (project `3a1f80a2-…`). 
 |---|---|---|
 | Resend | Email (verify/reset) | REST direct. No-op (logs) when key unset. |
 | Yahoo Finance (`yahoo-finance2`) | Live prices, benchmarks | TASE via `.TA` map. 15-min cache. |
-| Stooq | US + S&P 500 fallback | CSV, delayed ~15min, no 52w hi/lo. |
+| Stooq | ~~US + S&P 500 fallback~~ | **Blocked since 2026-08** — history is behind a JS proof-of-work wall, quote URL 404s on both mirrors. `stooq.service.ts` detects the block and disables itself for the process. Replacement provider is an open decision. |
 | TheMarker (scrape) | Unmapped-TASE current quotes | `__NEXT_DATA__` Apollo cache, agorot→ILS. |
-| funder.co.il (scrape) | TASE history (securities + funds) | `seco/`+`fundo/` JS literals; only source for fund history. Fragile to markup drift. |
+| funder.co.il (scrape) | TASE history (securities + funds) | Only source for fund history. `seco/` now serves the series in a hidden `<textarea id="tStockDataRaw">` (HTML-escaped); `fundo/` still uses the `var tStockData2` literal. Each endpoint carries ordered extractors, first hit wins — on drift, curl the page and prepend a new one rather than reaching for Playwright. |
 | Bank of Israel SDMX | Official ILS/USD rates | Free, backfills `exchange_rates`. |
 
 ## AI Agent Tools (22 built)

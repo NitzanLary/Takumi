@@ -35,6 +35,8 @@ model User {
   alerts             Alert[]
   conversations      AiConversation[]
   syncLogs           SyncLog[]
+  oauthGrants        OAuthGrant[]
+  oauthTokens        OAuthToken[]
 
   @@map("users")
 }
@@ -69,6 +71,81 @@ model VerificationToken {
 
   @@index([userId, purpose])
   @@map("verification_tokens")
+}
+
+// ─── OAuth 2.1 (MCP custom connector) ────────────────────────────
+// Takumi acts as its own authorization server so Claude can connect as a
+// remote MCP connector. Separate from `sessions`: those authenticate the web
+// UI, these authenticate an MCP client acting on a user's behalf. See
+// src/oauth/ for the endpoints and src/mcp/http-server.ts for the resource.
+
+/// A client registered via RFC 7591 Dynamic Client Registration. Claude
+/// registers a fresh client on each new connection, so rows accumulate.
+model OAuthClient {
+  id                      String   @id @default(cuid())
+  clientId                String   @unique @map("client_id")
+  /// SHA-256; null for public clients (Claude registers as one — it uses PKCE).
+  clientSecretHash        String?  @map("client_secret_hash")
+  clientName              String?  @map("client_name")
+  redirectUris            String[] @map("redirect_uris")
+  tokenEndpointAuthMethod String   @default("none") @map("token_endpoint_auth_method")
+  createdAt               DateTime @default(now()) @map("created_at")
+
+  grants OAuthGrant[]
+  tokens OAuthToken[]
+
+  @@map("oauth_clients")
+}
+
+/// A pending authorization code. Single-use and short-lived: `consumedAt` is
+/// set on redemption, and a second attempt revokes the whole grant chain
+/// (OAuth 2.1 replay defence).
+model OAuthGrant {
+  id                  String    @id @default(cuid())
+  codeHash            String    @unique @map("code_hash")
+  clientId            String    @map("client_id")
+  userId              String    @map("user_id")
+  redirectUri         String    @map("redirect_uri")
+  /// PKCE. S256 only — plain is not accepted.
+  codeChallenge       String    @map("code_challenge")
+  codeChallengeMethod String    @default("S256") @map("code_challenge_method")
+  scope               String
+  /// RFC 8707 audience. Tokens are minted bound to this value.
+  resource            String?
+  expiresAt           DateTime  @map("expires_at")
+  consumedAt          DateTime? @map("consumed_at")
+  createdAt           DateTime  @default(now()) @map("created_at")
+
+  client OAuthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("oauth_grants")
+}
+
+/// An issued access token, with its refresh token when `offline_access` was
+/// granted. Both are stored as SHA-256 hashes, never in the clear.
+model OAuthToken {
+  id                String    @id @default(cuid())
+  accessTokenHash   String    @unique @map("access_token_hash")
+  /// Rotated on every refresh, as OAuth 2.1 requires for public clients.
+  refreshTokenHash  String?   @unique @map("refresh_token_hash")
+  clientId          String    @map("client_id")
+  userId            String    @map("user_id")
+  scope             String
+  resource          String?
+  expiresAt         DateTime  @map("expires_at")
+  refreshExpiresAt  DateTime? @map("refresh_expires_at")
+  revokedAt         DateTime? @map("revoked_at")
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  client OAuthClient @relation(fields: [clientId], references: [clientId], onDelete: Cascade)
+  user   User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("oauth_tokens")
 }
 
 // ─── Trade Records ───────────────────────────────────────────────
