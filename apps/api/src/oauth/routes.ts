@@ -241,6 +241,24 @@ oauthRouter.get('/authorize', async (req, res) => {
     .map(([k, v]) => `<input type="hidden" name="${esc(k)}" value="${esc(String(v))}">`)
     .join('');
 
+  // helmet's global `form-action 'self'` breaks this page: approving redirects
+  // cross-origin to the client's redirect_uri, and browsers enforce
+  // form-action across the whole redirect chain — Chrome then reports the
+  // *original* action URL, so the error reads like a same-origin failure.
+  // Replace the policy for this one response, widening form-action to exactly
+  // the redirect target that was already validated against the registration.
+  res.setHeader(
+    'Content-Security-Policy',
+    [
+      "default-src 'none'",
+      "style-src 'unsafe-inline'",
+      "style-src-attr 'unsafe-inline'",
+      "base-uri 'none'",
+      "frame-ancestors 'none'",
+      `form-action 'self' ${new URL(params.redirectUri).origin}`,
+    ].join('; ')
+  );
+
   res.type('html').send(
     `<!doctype html><meta charset="utf-8"><title>Connect to Takumi</title>
 <body style="font-family:system-ui;max-width:30rem;margin:4rem auto;padding:0 1.25rem;line-height:1.5">
@@ -251,7 +269,7 @@ oauthRouter.get('/authorize', async (req, res) => {
   <p style="color:#555;font-size:.9rem">It cannot place trades, modify data, or change your account.
      Requested scope: <code>${esc(params.scope)}</code>.</p>
   <p style="color:#555;font-size:.85rem">Redirects to <code>${esc(params.redirectUri)}</code></p>
-  <form method="post" action="${ISSUER}/api/oauth/authorize" style="display:flex;gap:.75rem;margin-top:1.5rem">
+  <form method="post" action="/api/oauth/authorize" style="display:flex;gap:.75rem;margin-top:1.5rem">
     ${hidden}
     <button name="approve" value="yes" style="padding:.6rem 1.1rem;border:0;border-radius:.4rem;background:#111;color:#fff;font-size:1rem;cursor:pointer">Allow</button>
     <button name="approve" value="no" style="padding:.6rem 1.1rem;border:1px solid #ccc;border-radius:.4rem;background:#fff;font-size:1rem;cursor:pointer">Deny</button>
