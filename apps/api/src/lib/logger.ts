@@ -15,18 +15,32 @@ import { config } from "./config.js";
 
 const isProd = config.nodeEnv === "production";
 
-export const logger = pino({
-  level: process.env.LOG_LEVEL || "info",
-  // Pretty output in dev; raw JSON in prod.
-  transport: isProd
-    ? undefined
-    : {
-        target: "pino-pretty",
-        options: { colorize: true, translateTime: "HH:MM:ss", ignore: "pid,hostname" },
-      },
-  redact: {
-    // Never log secrets/credentials.
-    paths: ["req.headers.cookie", "req.headers.authorization"],
-    remove: true,
+// The MCP stdio server owns stdout — it is the JSON-RPC transport — so logs
+// must go to stderr (fd 2) there or they corrupt the protocol stream.
+const fd = process.env.LOG_TO_STDERR === "1" ? 2 : 1;
+
+export const logger = pino(
+  {
+    level: process.env.LOG_LEVEL || "info",
+    // Pretty output in dev; raw JSON in prod.
+    transport: isProd
+      ? undefined
+      : {
+          target: "pino-pretty",
+          options: {
+            colorize: true,
+            translateTime: "HH:MM:ss",
+            ignore: "pid,hostname",
+            destination: fd,
+          },
+        },
+    redact: {
+      // Never log secrets/credentials.
+      paths: ["req.headers.cookie", "req.headers.authorization"],
+      remove: true,
+    },
   },
-});
+  // Only needed on the transport-less (prod) path; the pretty transport routes
+  // itself via the `destination` option above.
+  isProd ? pino.destination(fd) : undefined
+);

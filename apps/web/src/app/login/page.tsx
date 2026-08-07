@@ -26,8 +26,18 @@ function LoginForm() {
         body: JSON.stringify({ email, password }),
       });
       await refresh();
-      const next = params.get("next") || "/dashboard";
-      router.push(next);
+      // Only same-origin paths: a bare "/" prefix, but not "//host" (which is
+      // protocol-relative) or "/\host". Anything else falls back to /dashboard.
+      const requested = params.get("next") || "";
+      const next = /^\/(?![/\\])/.test(requested) ? requested : "/dashboard";
+      // The OAuth consent flow sends users back to /api/oauth/authorize, which
+      // is served by Express through a rewrite rather than by the app router —
+      // router.push() cannot navigate there, so use a full page load.
+      if (next.startsWith("/api/")) {
+        window.location.href = next;
+      } else {
+        router.push(next);
+      }
     } catch (err) {
       setError((err as Error).message || "Login failed");
     } finally {
